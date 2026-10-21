@@ -21,6 +21,21 @@ bunx typetorch studio install-plugin
 (or `typetorch studio install-plugin --from <this folder>`). Then run `typetorch serve` in the game folder: the plugin
 finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
 
+## Working with someone else's serve
+
+The owner runs `typetorch serve --remote` and points a tunnel at it (Cloudflare Tunnel: `service:
+http://localhost:34890`), then `typetorch serve pair` for a one-time code. In the panel's **Remote server** card, enter
+the tunnel URL and the code and press **Pair**; Studio then syncs from that serve (code read-only) and the Hot assets
+buttons run there. **Use local serve** goes back. See the CLI's README ("A Studio on another machine").
+
+## Claude
+
+The toolbar's **Claude** button opens a chat with Claude Code on the machine that runs `typetorch serve --claude`
+(remote-claude from `@typetorch/dev-server`), like the in-game DEV > Claude tab: it edits that serve's dev branch, and
+when it's done you choose **Deploy** or **Discard**. It works with a local serve and with a paired remote one (pair
+again after updating the plugin, so serve knows your Roblox user; the owner adds your user id with
+`--claude-users`). Claude acting inside Studio itself isn't there yet.
+
 ## Layout
 
 The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two must change together.
@@ -39,7 +54,9 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
   synced, red disconnected): `rbxassetid://<id>` of each image, once the TypeTorch icon set is picked and uploaded.
   An empty id keeps Studio's default icon.
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
-- `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract).
+- `src/TypeTorch/Claude.luau`: the Claude window (`/tt/claude/...` on serve, which talks to remote-claude).
+- `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract): a local port, or
+  a paired remote serve (its URL plus a device token; Rojo at `<url>/r/<token>`).
 - `vendor/rojo/`: Rojo's plugin core, unchanged except where marked.
 - `assets/toolbar-icon.png` (32 px) and `toolbar-icon@2x.png` (64 px): the TypeTorch logo for the toolbar button. Upload
   the 32 px one as an image asset and put its `rbxassetid://` in `TOOLBAR_ICON` (`Panel.luau`). The logo's source is
