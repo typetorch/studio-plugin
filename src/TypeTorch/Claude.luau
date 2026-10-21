@@ -8,6 +8,9 @@
 -- serve's WebSocket stream (`/tt/claude/stream`) as they happen, also in the Play client (which can't make HTTP
 -- requests but can open the stream); HTTP polling stands in while there is no stream.
 
+local AssetService = game:GetService("AssetService")
+local CaptureService = game:GetService("CaptureService")
+local EncodingService = game:GetService("EncodingService")
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
 local Selection = game:GetService("Selection")
@@ -70,6 +73,12 @@ local ERRORS = {
 	api_billing_refused = "Refused: Claude Code must use a subscription login",
 	cancelled = "Stopped",
 	["claude timed out"] = "Claude timed out",
+	image_gone = "Image expired",
+	image_api = "Images need EditableImage (Studio's Mesh / Image APIs)",
+	image_data = "Image unreadable",
+	capture_failed = "Screenshot failed",
+	no_capture = "Screenshot not found on the dev-server PC",
+	capture_client = "Screenshots work in the Play client",
 }
 
 local function errorText(code: any): string
@@ -212,6 +221,13 @@ local function menuIcon(parent: Instance, kind: string, color: Color3): Frame
 			outline(0, y, 16, 6, 2)
 			bar(11, y + 2, 2, 2)
 		end
+	elseif kind == "camera" then
+		-- A camera: a stroked body, a bump on top and a round lens.
+		bar(4, 2, 6, 3)
+		outline(0, 4, 16, 11, 3)
+		local lens = make("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(5, 7), Size = UDim2.fromOffset(6, 6) }, box)
+		corner(lens, 3)
+		make("UIStroke", { Color = color, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, lens)
 	elseif kind == "toolbox" then
 		-- A toolbox: a stroked body with a handle on top and a latch.
 		outline(5, 1, 6, 5, 2)
@@ -461,6 +477,8 @@ local function inline(text: string): string
 			table.insert(out, "`")
 		end
 		local formatted = string.gsub(safe, "(https?://[^%s<%)]+)", `<font color="{hex(COLORS.info)}">%1</font>`)
+		-- An image (![caption](path)) shows as its own block (the image event), so its Markdown is dropped here.
+		formatted = string.gsub(formatted, "!%[[^%]]-%]%([^%)]-%)", "")
 		formatted = string.gsub(formatted, "%[([^%]]-)%]%(([^%)]-)%)", `<font color="{hex(COLORS.info)}"><u>%1</u></font>`)
 		formatted = string.gsub(formatted, "%*%*(.-)%*%*", "<b>%1</b>")
 		formatted = string.gsub(formatted, "%*([^%*%s][^%*]-)%*", "<i>%1</i>")
@@ -633,6 +651,8 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 	self.modes = {} :: { [string]: string }
 	-- The "+" menu's context for the next messages; the Toolbox goes with one message only.
 	self.attach = { path = false, myLogs = false, serverLogs = false, toolbox = false }
+	-- Screenshots for the next message: { contentId, captureTime } (at most MAX_SHOTS).
+	self.shots = {}
 
 	local button = toolbar:CreateButton("TypeTorchClaude", "Prompt Claude Code on the typetorch serve machine", "", "Claude")
 	button.ClickableWhenViewportHidden = true
@@ -655,6 +675,10 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 		if stream then
 			pcall(stream.client.Close, stream.client)
 		end
+	end)
+	-- Testing screenshots: setting ClaudeScreenshot takes one as the "+" menu's Screenshot does.
+	widget:GetAttributeChangedSignal("ClaudeScreenshot"):Connect(function()
+		self:screenshot()
 	end)
 	Widgets.keepOpen(plugin, widget)
 	button:SetActive(widget.Enabled)
@@ -954,6 +978,8 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 		{ name = "Dex path", icon = "dex", key = "path" },
 		{ name = "My logs", icon = "logs", key = "myLogs" },
 		{ name = "Server logs", icon = "server", key = "serverLogs", playOnly = true },
+		-- An action, not a toggle: takes a screenshot of the playtest view for the next message.
+		{ name = "Screenshot", icon = "camera", action = "screenshot", playOnly = true },
 		-- The Creator Store for the next message only: without it Claude gets no toolbox tools at all.
 		{ name = "Toolbox", icon = "toolbox", key = "toolbox", accent = true },
 	}
@@ -1010,7 +1036,11 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 		end)
 		row.Activated:Connect(function()
 			if disabled then
-				return self:notify("Server logs work during Play", COLORS.warn)
+				return self:notify(`{item.name} work{if item.action then "s" else ""} during Play`, COLORS.warn)
+			end
+			if item.action == "screenshot" then
+				self.closeMenu()
+				return self:screenshot()
 			end
 			attach[item.key] = not attach[item.key]
 			paintToggles()
@@ -1055,7 +1085,27 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 			end
 		end
 		local count = 0
+		for index, shot in self.shots do
+			-- A screenshot: its thumbnail and an "x".
+			count += 1
+			local chip = make("Frame", { BackgroundColor3 = COLORS.button, BorderSizePixel = 0, Size = UDim2.fromOffset(0, 40), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = 100 + index }, chips)
+			corner(chip, 8)
+			make("UIPadding", { PaddingLeft = UDim.new(0, 4), PaddingRight = UDim.new(0, 2) }, chip)
+			make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 2) }, chip)
+			local thumb = make("ImageLabel", { BackgroundColor3 = CODE_BG, BorderSizePixel = 0, Size = UDim2.fromOffset(math.floor(32 * shot.aspect), 32), Image = shot.contentId, ScaleType = Enum.ScaleType.Crop, LayoutOrder = 1 }, chip)
+			corner(thumb, 6)
+			removeButton(chip, 2, function()
+				local at = table.find(self.shots, shot)
+				if at then
+					table.remove(self.shots, at)
+				end
+				paintToggles()
+			end)
+		end
 		for index, item in items do
+			if item.action then
+				continue
+			end
 			local on = attach[item.key] == true
 			checks[item].Visible = on
 			if not on then
@@ -1326,8 +1376,16 @@ function Claude:showCopy(text: string)
 	box.TextWrapped = true
 	box.TextYAlignment = Enum.TextYAlignment.Top
 	box.Size = UDim2.fromScale(1, 0)
-	box.AutomaticSize = Enum.AutomaticSize.Y
 	pad(box, 6, 8)
+	-- Measured: AutomaticSize doesn't grow a TextBox inside a ScrollingFrame.
+	local function fit()
+		local width = scroll.AbsoluteSize.X - 16 - scroll.ScrollBarThickness
+		if width > 0 then
+			box.Size = UDim2.new(1, 0, 0, TextService:GetTextSize(text, SMALL, FONT, Vector2.new(width, 1e6)).Y + 16)
+		end
+	end
+	scroll:GetPropertyChangedSignal("AbsoluteSize"):Connect(fit)
+	fit()
 	box:CaptureFocus()
 	box.SelectionStart = 1
 	box.CursorPosition = #text + 1
@@ -1650,6 +1708,8 @@ function Claude:applyEvents(message, events)
 			end
 		elseif kind == "deploy_proposal" then
 			self:addProposalCard(message, event)
+		elseif kind == "image" and type(event.image) == "table" then
+			self:addImageBlock(message, event.image)
 		elseif kind == "toolbox_results" and type(event.tiles) == "table" then
 			self:addToolboxResults(message, event.tiles)
 		elseif kind == "error" then
@@ -1664,6 +1724,147 @@ function Claude:applyEvents(message, events)
 			syncBlocks(segment.holder, segment.rendered, parseMarkdown(stripEmoji(segment.text)))
 		end
 	end
+end
+
+-- Images ----------------------------------------------------------------------------------------------------------------
+
+-- The dev-server's limits (framework claude-images.ts): at most 1024 px a side, 2.5 MB of zstd in at most 48 chunks.
+local MAX_IMAGE_SIDE = 1024
+local MAX_IMAGE_BYTES = 2.5 * 1024 * 1024
+local MAX_IMAGE_CHUNKS = 48
+
+local function imageMeta(raw): { id: string, width: number, height: number, bytes: number, chunks: number }?
+	if type(raw) ~= "table" or type(raw.id) ~= "string" or not string.match(raw.id, "^[%w_-]+$") or #raw.id > 64 then
+		return nil
+	end
+	for _, key in { "width", "height", "bytes", "chunks" } do
+		if type(raw[key]) ~= "number" or raw[key] < 1 then
+			return nil
+		end
+	end
+	if raw.width > MAX_IMAGE_SIDE or raw.height > MAX_IMAGE_SIDE or raw.bytes > MAX_IMAGE_BYTES or raw.chunks > MAX_IMAGE_CHUNKS then
+		return nil
+	end
+	return { id = raw.id, width = math.floor(raw.width), height = math.floor(raw.height), bytes = math.floor(raw.bytes), chunks = math.floor(raw.chunks) }
+end
+
+-- Fetches an image Claude showed (GET /v1/images/:id?chunk=n through serve, base64 chunks of zstd RGBA8) and draws it
+-- into an EditableImage. Returns (true, image) or (false, error code). Pixels and base64 are never printed.
+function Claude:fetchImage(meta): (boolean, any)
+	local parts = {}
+	local total = 0
+	for index = 0, meta.chunks - 1 do
+		local ok, reply = self:request("POST", "/tt/claude/v1", { user = userId(), method = "GET", path = `/v1/images/{meta.id}?chunk={index}` })
+		if not ok then
+			return false, if isNotFound(reply) then "image_gone" else reply
+		end
+		if type(reply) ~= "table" or reply.id ~= meta.id or reply.chunk ~= index or type(reply.data) ~= "string" or #reply.data > 120 * 1024 then
+			return false, "image_data"
+		end
+		local decoded, bytes = pcall(EncodingService.Base64Decode, EncodingService, buffer.fromstring(reply.data))
+		if not decoded then
+			return false, "image_data"
+		end
+		total += buffer.len(bytes)
+		if total > MAX_IMAGE_BYTES then
+			return false, "image_data"
+		end
+		table.insert(parts, bytes)
+	end
+	local joined = buffer.create(total)
+	local at = 0
+	for _, part in parts do
+		buffer.copy(joined, at, part)
+		at += buffer.len(part)
+	end
+	local unpacked, pixels = pcall(EncodingService.DecompressBuffer, EncodingService, joined, Enum.CompressionAlgorithm.Zstd)
+	if not unpacked or buffer.len(pixels) ~= meta.width * meta.height * 4 then
+		return false, "image_data"
+	end
+	local created, image = pcall(AssetService.CreateEditableImage, AssetService, { Size = Vector2.new(meta.width, meta.height) })
+	if not created or image == nil then
+		return false, "image_api"
+	end
+	local written = pcall(image.WritePixelsBuffer, image, Vector2.zero, Vector2.new(meta.width, meta.height), pixels)
+	if not written then
+		image:Destroy()
+		return false, "image_api"
+	end
+	return true, image
+end
+
+-- An image Claude showed: fetched and drawn, tap to see it large. When that isn't possible: one short dim line.
+function Claude:addImageBlock(message, raw)
+	local frame = autoFrame(message.reply, #message.segments + 1)
+	table.insert(message.segments, { kind = "image", frame = frame })
+	local meta = imageMeta(raw)
+	if not meta then
+		return self:addNote(message, errorText("image_data"), DIMMER)
+	end
+	local width = math.min(260, meta.width)
+	local button = make("ImageButton", {
+		AutoButtonColor = false,
+		BackgroundColor3 = CODE_BG,
+		BorderSizePixel = 0,
+		Size = UDim2.fromOffset(width, math.max(1, math.floor(width * meta.height / meta.width))),
+		ScaleType = Enum.ScaleType.Stretch,
+	}, frame)
+	corner(button, 8)
+	local myView = self.view
+	-- One image at a time (each is several requests).
+	task.spawn(function()
+		while self.fetchingImage do
+			task.wait(0.2)
+		end
+		self.fetchingImage = true
+		local ok, fetched, image = pcall(self.fetchImage, self, meta)
+		self.fetchingImage = false
+		fetched = ok and fetched
+		if myView ~= self.view or button.Parent == nil then
+			if fetched then
+				image:Destroy()
+			end
+			return
+		end
+		local shown = fetched and pcall(function()
+			button.ImageContent = Content.fromObject(image)
+		end)
+		if not shown then
+			if fetched then
+				image:Destroy()
+			end
+			button:Destroy()
+			local line = label(errorText(if fetched then "image_api" elseif ok and type(image) == "string" then image else "image_gone"), DIMMER, SMALL, false)
+			line.Parent = frame
+			return
+		end
+		frame.Destroying:Connect(function()
+			image:Destroy()
+		end)
+		button.Activated:Connect(function()
+			self:showImage(image, meta.width / meta.height)
+		end)
+	end)
+end
+
+-- Big picture: the image fitted over the whole window; a tap anywhere closes it.
+function Claude:showImage(image: EditableImage, aspect: number)
+	local layer = make("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.15, Size = UDim2.fromScale(1, 1), ZIndex = 30 }, self.widget)
+	layer.Activated:Connect(function()
+		layer:Destroy()
+	end)
+	local picture = make("ImageLabel", {
+		BackgroundTransparency = 1,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, -24, 1, -24),
+		ScaleType = Enum.ScaleType.Fit,
+		ZIndex = 31,
+	}, layer)
+	make("UIAspectRatioConstraint", { AspectRatio = aspect }, picture)
+	pcall(function()
+		picture.ImageContent = Content.fromObject(image)
+	end)
 end
 
 -- Toolbox search results (toolbox_results): a grid of up to 6 tiles, 2 columns in a narrow window, else 3. Tapping a
@@ -2076,6 +2277,21 @@ function Claude:send()
 		if next(context) then
 			body.context = context
 		end
+		-- Screenshots: the dev-server picks each one up from the file Roblox wrote on its PC (by capture time).
+		local shots = table.clone(self.shots)
+		if #shots > 0 then
+			local ids = {}
+			for _, shot in shots do
+				local attached, answer = self:request("POST", "/tt/claude/v1", { user = userId(), method = "POST", path = "/v1/attachments/capture", body = { captureTime = shot.captureTime, placeId = game.PlaceId } })
+				if not attached or type(answer) ~= "table" or type(answer.id) ~= "string" then
+					self.sending = false
+					self:dropPending(message, prompt)
+					return self:notify(errorText(if attached or isNotFound(answer) then "no_capture" else answer), COLORS.bad)
+				end
+				table.insert(ids, answer.id)
+			end
+			body.attachments = ids
+		end
 		local ok, reply = self:request("POST", "/tt/claude/prompt", body)
 		local restarted = false
 		if not ok and self.conversationId ~= nil and isNotFound(reply) then
@@ -2100,11 +2316,17 @@ function Claude:send()
 		if self.conversationId then
 			self.modes[self.conversationId] = mode
 		end
-		-- The Toolbox goes with one message only.
+		-- The Toolbox and the screenshots go with one message only.
 		if toolbox and attach.toolbox then
 			attach.toolbox = false
-			self.paintToggles()
 		end
+		for _, shot in shots do
+			local at = table.find(self.shots, shot)
+			if at then
+				table.remove(self.shots, at)
+			end
+		end
+		self.paintToggles()
 		message.id = reply.id
 		message.pending = nil
 		message.state = reply.state or message.state
@@ -2113,6 +2335,40 @@ function Claude:send()
 		if not self:streaming() then
 			self:poll()
 		end
+	end)
+end
+
+-- Screenshots ------------------------------------------------------------------------------------------------------
+
+local MAX_SHOTS = 4
+
+-- Takes a screenshot of the playtest view (the Play client only: the engine captures the game's viewport) for the next
+-- message. The classic capture gives a temporary content id for the chip and this PC's clock for the dev-server.
+function Claude:screenshot()
+	if not RunService:IsClient() or RunService:IsEdit() then
+		return self:notify(errorText("capture_client"), COLORS.warn)
+	end
+	if #self.shots >= MAX_SHOTS then
+		return self:notify(`At most {MAX_SHOTS} screenshots`, COLORS.warn)
+	end
+	local camera = workspace.CurrentCamera
+	local view = if camera then camera.ViewportSize else Vector2.new(16, 9)
+	local aspect = if view.Y > 0 then math.clamp(view.X / view.Y, 0.5, 3) else 16 / 9
+	task.spawn(function()
+		local contentId
+		local started = pcall(CaptureService.CaptureScreenshot, CaptureService, function(id)
+			contentId = id
+		end)
+		local deadline = os.clock() + 6
+		while started and contentId == nil and os.clock() < deadline do
+			task.wait(0.05)
+		end
+		if type(contentId) ~= "string" then
+			return self:notify(errorText("capture_failed"), COLORS.bad)
+		end
+		table.insert(self.shots, { contentId = contentId, captureTime = DateTime.now().UnixTimestampMillis, aspect = aspect })
+		self:notify("")
+		self.paintToggles()
 	end)
 end
 

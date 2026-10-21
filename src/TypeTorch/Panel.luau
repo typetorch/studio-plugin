@@ -49,7 +49,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	local button = toolbar:CreateButton("TypeTorchSync", "TypeTorch sync status", Icons.idle, "TypeTorch")
 	button.ClickableWhenViewportHidden = true
 	self.button = button
-	local widget = Widgets.dock(plugin, "TypeTorchSync", 320, 420, 260, 240)
+	local widget = Widgets.dock(plugin, "TypeTorchSync", 320, 420, 260, 240, true)
 	widget.Title = "TypeTorch"
 	widget.Name = "TypeTorchSync"
 	self.widget = widget

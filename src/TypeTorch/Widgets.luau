@@ -24,8 +24,10 @@ Widgets.BUTTON_HEIGHT = 34
 
 local COLORS = Widgets.COLORS
 
-local function playtestOpenKey(id: string): string
-	return `TypeTorch_playtestOpen_{id}`
+-- A window that starts closed in playtests keeps its state under its own key (so an "open" saved before the default
+-- changed doesn't count).
+local function playtestOpenKey(id: string, closedByDefault: boolean?): string
+	return if closedByDefault then `TypeTorch_playtestShown_{id}` else `TypeTorch_playtestOpen_{id}`
 end
 
 -- Each playtest's windows get ids of their own: Studio keeps a separate window layout for playtests and always brings
@@ -38,8 +40,9 @@ local function widthKey(id: string): string
 end
 
 -- A dock widget: docked on the right in Edit, on the left in a playtest. In a playtest it's open unless closed in an
--- earlier playtest.
-function Widgets.dock(plugin: Plugin, id: string, width: number, height: number, minWidth: number, minHeight: number)
+-- earlier playtest; with `closedInPlaytest` it's closed unless opened in an earlier playtest (the left column is short,
+-- so the Claude window gets it).
+function Widgets.dock(plugin: Plugin, id: string, width: number, height: number, minWidth: number, minHeight: number, closedInPlaytest: boolean?)
 	local edit = game:GetService("RunService"):IsEdit()
 	if not edit and not playtestLayout then
 		local last = plugin:GetSetting("TypeTorch_playtestLayout")
@@ -50,11 +53,13 @@ function Widgets.dock(plugin: Plugin, id: string, width: number, height: number,
 	if not edit and type(saved) == "number" then
 		width = math.clamp(math.floor(saved), minWidth, 1200)
 	end
-	local open = not edit and plugin:GetSetting(playtestOpenKey(id)) ~= false
+	local openKey = playtestOpenKey(id, closedInPlaytest)
+	local open = not edit and if closedInPlaytest then plugin:GetSetting(openKey) == true else plugin:GetSetting(openKey) ~= false
 	local widget = plugin:CreateDockWidgetPluginGuiAsync(
 		if edit then id else `{id}Playtest{playtestLayout}`,
 		DockWidgetPluginGuiInfo.new(if edit then Enum.InitialDockState.Right else Enum.InitialDockState.Left, open, not edit, width, height, minWidth, minHeight)
 	)
+	widget:SetAttribute("TypeTorchOpenKey", openKey)
 	-- Remembers the width a moment after a resize settles (not while dragging, nor the 0 of a closing window).
 	local pending = 0
 	widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
@@ -78,7 +83,7 @@ function Widgets.keepOpen(plugin: Plugin, widget: DockWidgetPluginGui)
 	if game:GetService("RunService"):IsEdit() then
 		return
 	end
-	local key = playtestOpenKey(widget.Name)
+	local key = widget:GetAttribute("TypeTorchOpenKey") or playtestOpenKey(widget.Name)
 	widget:GetPropertyChangedSignal("Enabled"):Connect(function()
 		local enabled = widget.Enabled
 		task.delay(if enabled then 0 else 1, function()
