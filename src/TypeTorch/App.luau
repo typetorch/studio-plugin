@@ -20,12 +20,13 @@ local Log = require(Rojo.Packages.Log)
 
 local Agent = require(script.Parent.Agent)
 local Assets = require(script.Parent.Assets)
+local Claude = require(script.Parent.Claude)
 local Control = require(script.Parent.Control)
 local Panel = require(script.Parent.Panel)
 
 local App = {}
 
-local VERSION = "0.5.0"
+local VERSION = "0.6.0"
 local PROBE_SECONDS = 2
 local HEARTBEAT_SECONDS = 5
 local STATUS_SECONDS = 3
@@ -452,7 +453,10 @@ function App.pairRemote(url: string, code: string)
 	end
 	state.remoteMessage = "Pairing"
 	render()
-	local ok, token = Control.pair(url, code, deviceName())
+	local okId, userId = pcall(function()
+		return game:GetService("StudioService"):GetUserId()
+	end)
+	local ok, token = Control.pair(url, code, deviceName(), if okId then userId else nil)
 	if not ok then
 		state.remoteMessage = `Couldn't pair: {token}`
 		render()
@@ -704,6 +708,9 @@ function App.start(plugin: Plugin)
 		pairRemote = App.pairRemote,
 		forgetRemote = App.forgetRemote,
 	}, VERSION)
+	Claude.new(plugin, panel.toolbar, function()
+		return if state.server then state.server.port else nil
+	end)
 	render()
 	task.spawn(loop)
 	task.spawn(statusLoop)

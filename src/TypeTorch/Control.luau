@@ -81,13 +81,14 @@ function Control.request(endpoint: Endpoint, method: string, path: string, body:
 	return true, decoded
 end
 
--- Trades a pairing code from `typetorch serve pair` for a device token. Returns (ok, token or error text).
-function Control.pair(url: string, code: string, name: string): (boolean, string)
+-- Trades a pairing code from `typetorch serve pair` for a device token. `userId`: this Studio's Roblox user, whose
+-- prompts the Claude window sends. Returns (ok, token or error text).
+function Control.pair(url: string, code: string, name: string, userId: number?): (boolean, string)
 	local ok, response = pcall(HttpService.RequestAsync, HttpService, {
 		Url = `{Control.trimUrl(url)}/tt/pair`,
 		Method = "POST",
 		Headers = { ["Content-Type"] = "application/json" },
-		Body = HttpService:JSONEncode({ code = code, name = name }),
+		Body = HttpService:JSONEncode({ code = code, name = name, userId = if userId and userId > 0 then userId else nil }),
 	})
 	if not ok then
 		return false, tostring(response)

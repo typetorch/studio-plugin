@@ -43,6 +43,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	local self = setmetatable({}, Panel)
 	self.actions = actions
 	local toolbar = plugin:CreateToolbar("TypeTorch")
+	self.toolbar = toolbar
 	local button = toolbar:CreateButton("TypeTorchSync", "TypeTorch sync status", Icons.idle, "TypeTorch")
 	button.ClickableWhenViewportHidden = true
 	self.button = button
