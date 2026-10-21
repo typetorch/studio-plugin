@@ -25,7 +25,7 @@ local Panel = require(script.Parent.Panel)
 
 local App = {}
 
-local VERSION = "0.4.0"
+local VERSION = "0.5.0"
 local PROBE_SECONDS = 2
 local HEARTBEAT_SECONDS = 5
 local STATUS_SECONDS = 3
@@ -59,7 +59,7 @@ local state = {
 	backoff = 1,
 	status = nil, -- the last GET /tt/status (compile state, children)
 	-- The Hot assets card: what the place marks (scanned here), what the lockfile knows (GET /tt/assets), the last job.
-	assets = { marked = {}, scanned = false, lock = nil, message = "", job = nil, jobText = "" },
+	assets = { marked = {}, scanned = false, lock = nil, changes = nil, message = "", job = nil, jobText = "" },
 	wake = nil :: thread?,
 }
 
@@ -257,7 +257,7 @@ local function loop()
 			elseif not server then
 				state.server = nil
 				if #found == 0 then
-					setPhase("waiting", "Run `bun run typetorch serve` in the game folder")
+					setPhase("waiting", "Run `typetorch serve` in the game folder")
 				else
 					setPhase("waiting", `{#found} servers run, none for this experience ({game.GameId})`)
 				end
@@ -324,36 +324,63 @@ local function assetsMessage(text: string)
 	render()
 end
 
-function App.markSelection(key: string)
-	local _, message = Assets.markSelection(key)
-	assetsMessage(message)
+-- The last check's verdict per key ("added", "updated", "unchanged"), from a job's `changes`.
+local function rememberChanges(job)
+	local result = job and job.result
+	if type(result) ~= "table" or type(result.changes) ~= "table" then
+		return
+	end
+	local byKey = {}
+	for _, change in result.changes do
+		if type(change) == "table" and type(change.key) == "string" then
+			-- after an upload everything it sent is up to date
+			byKey[change.key] = if result.dryRun or change.error then change.status else "unchanged"
+		end
+	end
+	state.assets.changes = byKey
 end
 
-function App.unmarkSelection()
-	local _, message = Assets.unmarkSelection()
+function App.addSelection(name: string)
+	local ok, message = Assets.addSelection(name)
 	assetsMessage(message)
+	if ok then
+		App.runJob("assets-status", true)
+	end
 end
 
--- Runs a hot asset job in typetorch serve and follows it until it ends.
-function App.runJob(kind: string)
+function App.removeSelection()
+	local ok, message = Assets.removeSelection()
+	assetsMessage(message)
+	if ok then
+		App.runJob("assets-status", true)
+	end
+end
+
+-- Exports the place's hot assets and runs a job on them in typetorch serve, following it until it ends. `quiet`: an
+-- automatic check (no message when serve isn't there).
+function App.runJob(kind: string, quiet: boolean?)
 	local server = state.server
 	if not server then
-		assetsMessage("Start typetorch serve first")
+		if not quiet then
+			assetsMessage("Start typetorch serve first")
+		end
 		return
 	end
 	if state.assets.job and state.assets.job.state == "running" then
 		return
 	end
-	for _, entry in Assets.scan() do
-		if #entry.problems > 0 then
-			assetsMessage(`Fix the problems first ({entry.key}: {entry.problems[1]})`)
-			return
-		end
+	state.assets.jobText = "Exporting from this place"
+	render()
+	local exported, export = Assets.export()
+	if not exported then
+		state.assets.jobText = ""
+		assetsMessage(export)
+		return
 	end
-	state.assets.message = if kind == "assets-status"
-		then ""
-		else "Sync reads the PUBLISHED place: publish your changes first (File > Publish to Roblox)."
-	local ok, job = Control.request(server.port, "POST", "/tt/jobs", { kind = kind })
+	if not quiet then
+		state.assets.message = ""
+	end
+	local ok, job = Control.request(server.port, "POST", "/tt/jobs", { kind = kind, export = export })
 	if not ok then
 		state.assets.job = nil
 		state.assets.jobText = `Couldn't start: {job}`
@@ -373,6 +400,9 @@ function App.runJob(kind: string)
 			end
 		end
 		state.assets.jobText = Assets.describeJob(job)
+		if job.state == "done" then
+			rememberChanges(job)
+		end
 		refreshAssets()
 		render()
 	end)
@@ -603,8 +633,8 @@ function App.start(plugin: Plugin)
 		setAutoConnect = App.setAutoConnect,
 		confirm = App.confirm,
 		setLivePlaytest = App.setLivePlaytest,
-		markSelection = App.markSelection,
-		unmarkSelection = App.unmarkSelection,
+		addSelection = App.addSelection,
+		removeSelection = App.removeSelection,
 		runJob = App.runJob,
 		suggestKey = Assets.suggestKey,
 	}, VERSION)

@@ -2,6 +2,7 @@
 -- The plugin's dock widget: sync status, the matched server, the last compile result and the buttons. Same look as
 -- the TypeTorch dev menu (Widgets.luau).
 
+local Icons = require(script.Parent.Icons)
 local Widgets = require(script.Parent.Widgets)
 local COLORS = Widgets.COLORS
 local make = Widgets.make
@@ -9,13 +10,14 @@ local make = Widgets.make
 local Panel = {}
 Panel.__index = Panel
 
+-- { label, dot color, toolbar icon }
 local PHASES = {
-	waiting = { "Waiting for typetorch serve", COLORS.dim },
-	confirm = { "Found a server for another place", COLORS.warn },
-	connecting = { "Connecting", COLORS.warn },
-	connected = { "Synced", COLORS.good },
-	disconnected = { "Disconnected, retrying", COLORS.bad },
-	paused = { "Paused", COLORS.dim },
+	waiting = { "Waiting for typetorch serve", COLORS.dim, Icons.idle },
+	confirm = { "Found a server for another place", COLORS.warn, Icons.connecting },
+	connecting = { "Connecting", COLORS.warn, Icons.connecting },
+	connected = { "Synced", COLORS.good, Icons.synced },
+	disconnected = { "Disconnected, retrying", COLORS.bad, Icons.error },
+	paused = { "Paused", COLORS.dim, Icons.idle },
 }
 
 local MAX_ERRORS = 8
@@ -40,8 +42,9 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	local self = setmetatable({}, Panel)
 	self.actions = actions
 	local toolbar = plugin:CreateToolbar("TypeTorch")
-	local button = toolbar:CreateButton("TypeTorchSync", "TypeTorch sync status", "", "TypeTorch")
+	local button = toolbar:CreateButton("TypeTorchSync", "TypeTorch sync status", Icons.idle, "TypeTorch")
 	button.ClickableWhenViewportHidden = true
+	self.button = button
 	local widget = plugin:CreateDockWidgetPluginGuiAsync(
 		"TypeTorchSync",
 		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 320, 420, 260, 240)
@@ -97,7 +100,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	Widgets.line(assetsCard, "Hot assets", 15, COLORS.text, Enum.Font.BuilderSansBold)
 	Widgets.line(
 		assetsCard,
-		"Mark a model or UI template, publish the place, then Sync: running servers pick up new versions without a restart.",
+		"Select a model or UI in the Explorer and press Add. Publish to dev sends what changed from this Studio: dev servers pick it up without a restart.",
 		14,
 		COLORS.dim
 	)
@@ -108,22 +111,22 @@ function Panel.new(plugin: Plugin, actions, version: string)
 		label.Visible = false
 		self.assetLines[i] = label
 	end
-	self.keyBox = Widgets.textBox(assetsCard, "key for the selection, e.g. ui/shop")
+	self.keyBox = Widgets.textBox(assetsCard, "name (optional, from the selection)")
 	local markButtons = Widgets.buttonRow(assetsCard)
-	Widgets.button(markButtons, "Mark selection", function()
-		actions.markSelection(self.keyBox.Text)
+	Widgets.button(markButtons, "Add", function()
+		actions.addSelection(self.keyBox.Text)
 	end)
-	Widgets.button(markButtons, "Unmark", function()
-		actions.unmarkSelection()
+	Widgets.button(markButtons, "Remove", function()
+		actions.removeSelection()
 	end)
 	local syncButtons = Widgets.buttonRow(assetsCard)
 	Widgets.button(syncButtons, "Check", function()
 		actions.runJob("assets-status")
 	end)
-	Widgets.button(syncButtons, "Sync", function()
+	Widgets.button(syncButtons, "Upload", function()
 		actions.runJob("assets-sync")
 	end)
-	self.deployButton = Widgets.button(syncButtons, "Sync + deploy to dev", function()
+	self.deployButton = Widgets.button(syncButtons, "Publish to dev", function()
 		actions.runJob("assets-deploy-dev")
 	end, COLORS.accent)
 	self.deployButton.TextColor3 = COLORS.dark
@@ -131,10 +134,8 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	self.jobLine = Widgets.line(assetsCard, "", 14, COLORS.dim)
 	game:GetService("Selection").SelectionChanged:Connect(function()
 		local selected = game:GetService("Selection"):Get()
-		if #selected == 1 and selected[1].Parent ~= game then
-			local current = selected[1]:GetAttribute("TypeTorchAsset")
-			self.keyBox.Text = if type(current) == "string" then current else actions.suggestKey(selected[1])
-		end
+		local current = if #selected == 1 then selected[1]:GetAttribute("TypeTorchAsset") else nil
+		self.keyBox.Text = if type(current) == "string" then current else ""
 	end)
 
 	-- Compile card
@@ -164,6 +165,9 @@ function Panel:render(state)
 	local phase = PHASES[state.phase] or PHASES.waiting
 	self.statusLabel.Text = phase[1]
 	self.dot.BackgroundColor3 = phase[2]
+	if phase[3] ~= "" and self.button.Icon ~= phase[3] then
+		self.button.Icon = phase[3]
+	end
 	self.detail.Text = state.detail
 	self.detail.Visible = state.detail ~= ""
 	local server = state.server
@@ -213,7 +217,7 @@ function Panel:render(state)
 		for _, label in self.errors do
 			label.Visible = false
 		end
-		self.children.Text = if server then "" else "Start it in the game folder: bun run typetorch serve"
+		self.children.Text = if server then "" else "Start it in the game folder: typetorch serve"
 	end
 end
 
@@ -238,7 +242,9 @@ function Panel:renderAssets(state)
 			.. if problems > 0 then `, {problems} with problems` else ""
 	end
 	self.assetsSummary.TextColor3 = if problems > 0 then COLORS.bad else COLORS.dim
-	-- Problems first, then assets the lockfile doesn't know yet, then the rest.
+	-- Problems first, then what Publish would send, then the rest. The last check (state.assets.changes) knows what
+	-- changed; without one, a key the lockfile doesn't have is new.
+	local changes = assets.changes or {}
 	local rows = {}
 	for _, entry in assets.marked do
 		if #entry.problems > 0 then
@@ -246,21 +252,27 @@ function Panel:renderAssets(state)
 		end
 	end
 	local present = {}
+	local later = {}
 	for _, entry in assets.marked do
 		present[entry.key] = true
-		if #entry.problems == 0 and not inLock[entry.key] then
-			table.insert(rows, { `{entry.key}  {entry.className}  not synced yet`, COLORS.warn })
+		if #entry.problems == 0 then
+			local status = changes[entry.key] or (if inLock[entry.key] then nil else "added")
+			if status == "added" then
+				table.insert(rows, { `{entry.key}  {entry.className}  new`, COLORS.warn })
+			elseif status == "updated" then
+				table.insert(rows, { `{entry.key}  {entry.className}  changed`, COLORS.warn })
+			else
+				table.insert(later, { `{entry.key}  {entry.className}  {if status == "unchanged" then "up to date" else "published"}`, COLORS.text })
+			end
 		end
 	end
 	for key in inLock do
 		if not present[key] and assets.scanned then
-			table.insert(rows, { `{key}  removed from the place (sync drops it)`, COLORS.dim })
+			table.insert(rows, { `{key}  removed (Publish drops it)`, COLORS.dim })
 		end
 	end
-	for _, entry in assets.marked do
-		if #entry.problems == 0 and inLock[entry.key] then
-			table.insert(rows, { `{entry.key}  {entry.className}`, COLORS.text })
-		end
+	for _, row in later do
+		table.insert(rows, row)
 	end
 	for i, label in self.assetLines do
 		local row = rows[i]
@@ -270,7 +282,7 @@ function Panel:renderAssets(state)
 			label.TextColor3 = row[2]
 		end
 	end
-	self.deployButton.Text = `Sync + deploy to {if lock and lock.devBranch then lock.devBranch else "dev"}`
+	self.deployButton.Text = `Publish to {if lock and lock.devBranch then lock.devBranch else "dev"}`
 	self.assetsMessage.Text = assets.message
 	self.assetsMessage.Visible = assets.message ~= ""
 	self.jobLine.Text = assets.jobText

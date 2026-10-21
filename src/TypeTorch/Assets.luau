@@ -1,11 +1,14 @@
 --!nonstrict
 -- Hot assets from inside Studio: mark and unmark instances (the TypeTorchAsset attribute), and check the place by the
 -- same rules `typetorch assets sync` applies (cli src/assets.ts exportScript): a valid unique key, no scripts inside,
--- not inside another hot asset, not a service, no "/" in a parent's name. Syncing itself runs in `typetorch serve`
--- (POST /tt/jobs), since it uploads with the project's assets key.
+-- not inside another hot asset, not a service, no "/" in a parent's name. The plugin exports them from the open place
+-- itself (no publish needed); checking and uploading run in `typetorch serve` (POST /tt/jobs with the export), since
+-- uploads use the project's assets key.
 
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
+local CollectionService = game:GetService("CollectionService")
 local Selection = game:GetService("Selection")
+local SerializationService = game:GetService("SerializationService")
 
 local Assets = {}
 
@@ -128,41 +131,71 @@ function Assets.scan(): { Marked }
 	return found
 end
 
--- Marks the selected instance. Returns (ok, message).
-function Assets.markSelection(key: string): (boolean, string)
+-- A key no other marked instance uses: `key`, else `key-2`, `key-3`, ...
+local function freeKey(key: string, taken: { [string]: boolean }): string
+	if not taken[key] then
+		return key
+	end
+	local n = 2
+	while taken[`{string.sub(key, 1, KEY_MAX - 4)}-{n}`] do
+		n += 1
+	end
+	return `{string.sub(key, 1, KEY_MAX - 4)}-{n}`
+end
+
+-- Marks every selected instance that isn't one yet. `name`: the key when exactly one instance is selected (else, or
+-- when empty, a key from each instance's name). Returns (ok, message).
+function Assets.addSelection(name: string?): (boolean, string)
 	local selected = Selection:Get()
-	if #selected ~= 1 then
-		return false, "Select one instance first"
+	if #selected == 0 then
+		return false, "Select a model or UI in the Explorer first"
 	end
-	local instance = selected[1]
-	if instance.Parent == game then
-		return false, "A service can't be a hot asset"
-	end
-	local problem = Assets.keyError(key)
-	if problem then
-		return false, problem
-	end
+	local taken = {}
 	for _, entry in Assets.scan() do
-		if entry.key == key and entry.instance ~= instance then
-			return false, `"{key}" is already used at {entry.path}`
+		taken[entry.key] = true
+	end
+	local chosen = if name and #selected == 1 and name ~= "" then name else nil
+	if chosen then
+		local problem = Assets.keyError(chosen)
+		if problem then
+			return false, problem
 		end
 	end
-	local scripts = hasScripts(instance)
-	if scripts > 0 then
-		return false, `{instance.Name} holds {scripts} script{if scripts == 1 then "" else "s"}: hot assets can't`
+	local added, skipped = {}, {}
+	local recording = ChangeHistoryService:TryBeginRecording("TypeTorch: add hot assets")
+	for _, instance in selected do
+		local current = instance:GetAttribute(Assets.ATTRIBUTE)
+		if instance.Parent == game then
+			table.insert(skipped, `{instance.Name} is a service`)
+		elseif hasScripts(instance) > 0 then
+			table.insert(skipped, `{instance.Name} holds scripts`)
+		elseif current ~= nil and (chosen == nil or chosen == current) then
+			table.insert(skipped, `{instance.Name} is already "{current}"`)
+		else
+			if current ~= nil then
+				taken[current] = nil
+			end
+			local key = freeKey(chosen or Assets.suggestKey(instance), taken)
+			taken[key] = true
+			instance:SetAttribute(Assets.ATTRIBUTE, key)
+			table.insert(added, `{instance.Name} as "{key}"`)
+		end
 	end
-	local recording = ChangeHistoryService:TryBeginRecording("TypeTorch: mark hot asset")
-	instance:SetAttribute(Assets.ATTRIBUTE, key)
 	if recording then
 		ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
 	end
-	return true, `Marked {instance.Name} as "{key}". Publish the place, then Sync.`
+	local text = if #added > 0 then `Added {table.concat(added, ", ")}. Publish to dev sends it.` else "Nothing added"
+	if #skipped > 0 then
+		text ..= ` (skipped: {table.concat(skipped, "; ")})`
+	end
+	return #added > 0, text
 end
 
-function Assets.unmarkSelection(): (boolean, string)
+-- Unmarks the selected hot assets. Returns (ok, message).
+function Assets.removeSelection(): (boolean, string)
 	local selected = Selection:Get()
 	local count = 0
-	local recording = ChangeHistoryService:TryBeginRecording("TypeTorch: unmark hot asset")
+	local recording = ChangeHistoryService:TryBeginRecording("TypeTorch: remove hot assets")
 	for _, instance in selected do
 		if instance:GetAttribute(Assets.ATTRIBUTE) ~= nil then
 			instance:SetAttribute(Assets.ATTRIBUTE, nil)
@@ -175,7 +208,123 @@ function Assets.unmarkSelection(): (boolean, string)
 	if count == 0 then
 		return false, "Nothing selected is a hot asset"
 	end
-	return true, `Unmarked {count}. Publish the place, then Sync.`
+	return true, `Removed {count}. Running servers keep it until the next Publish to dev.`
+end
+
+local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_BYTES = {}
+for i = 1, 64 do
+	B64_BYTES[i - 1] = string.byte(B64, i)
+end
+
+function Assets.base64(data: buffer): string
+	local size = buffer.len(data)
+	local out = buffer.create(((size + 2) // 3) * 4)
+	local o = 0
+	for i = 0, size - 1, 3 do
+		local a = buffer.readu8(data, i)
+		local b = if i + 1 < size then buffer.readu8(data, i + 1) else 0
+		local c = if i + 2 < size then buffer.readu8(data, i + 2) else 0
+		local n = bit32.bor(bit32.lshift(a, 16), bit32.lshift(b, 8), c)
+		buffer.writeu8(out, o, B64_BYTES[bit32.extract(n, 18, 6)])
+		buffer.writeu8(out, o + 1, B64_BYTES[bit32.extract(n, 12, 6)])
+		buffer.writeu8(out, o + 2, if i + 1 < size then B64_BYTES[bit32.extract(n, 6, 6)] else 61)
+		buffer.writeu8(out, o + 3, if i + 2 < size then B64_BYTES[bit32.extract(n, 0, 6)] else 61)
+		o += 4
+	end
+	return buffer.tostring(out)
+end
+
+-- Stamps the live runtime puts on hot assets (cli src/assets.ts): never part of an export.
+local STAMPS = { "TypeTorchAssetId", "TypeTorchAssetHash", "TypeTorchAssetVersion" }
+local TAG_PREFIX = "__typetorch_asset:"
+local MAGIC = "TTA1"
+
+-- A copy without the runtime's stamps when the instance has any (an asset copied from a live server), else itself.
+local function exportable(instance: Instance): Instance
+	local stamped = false
+	for _, name in STAMPS do
+		if instance:GetAttribute(name) ~= nil then
+			stamped = true
+		end
+	end
+	for _, tag in CollectionService:GetTags(instance) do
+		if string.sub(tag, 1, #TAG_PREFIX) == TAG_PREFIX then
+			stamped = true
+		end
+	end
+	if not stamped then
+		return instance
+	end
+	local archivable = instance.Archivable
+	instance.Archivable = true
+	local copy = instance:Clone()
+	instance.Archivable = archivable
+	for _, name in STAMPS do
+		copy:SetAttribute(name, nil)
+	end
+	for _, tag in CollectionService:GetTags(copy) do
+		if string.sub(tag, 1, #TAG_PREFIX) == TAG_PREFIX then
+			CollectionService:RemoveTag(copy, tag)
+		end
+	end
+	return copy
+end
+
+-- The open place's hot assets as `typetorch assets sync --studio-export` reads them: the export task's metadata (cli
+-- src/assets.ts exportScript) plus `binary`, "TTA1" and each serialized asset back to back, in base64. Yields.
+-- Returns (ok, export or message).
+function Assets.export(): (boolean, any)
+	local marked = Assets.scan()
+	for _, entry in marked do
+		if #entry.problems > 0 then
+			return false, `Fix the problems first ({entry.key}: {entry.problems[1]})`
+		end
+	end
+	local parts, metas = {}, {}
+	local total = #MAGIC
+	for _, entry in marked do
+		local ok, result = pcall(function()
+			return SerializationService:SerializeInstancesAsync({ exportable(entry.instance) })
+		end)
+		if not ok then
+			return false, `{entry.key}: couldn't serialize ({result})`
+		end
+		local path = {}
+		local current = entry.instance.Parent
+		while current and current ~= game do
+			table.insert(path, 1, current.Name)
+			current = current.Parent
+		end
+		table.insert(parts, result)
+		table.insert(metas, {
+			key = entry.key,
+			keyType = "string",
+			path = path,
+			name = entry.instance.Name,
+			className = entry.className,
+			scripts = {},
+			scriptCount = 0,
+			offset = total,
+			size = buffer.len(result),
+		})
+		total += buffer.len(result)
+	end
+	local out = buffer.create(total)
+	buffer.writestring(out, 0, MAGIC)
+	for i, part in parts do
+		buffer.copy(out, metas[i].offset, part)
+	end
+	return true,
+		{
+			v = 1,
+			placeVersion = game.PlaceVersion,
+			placeId = string.format("%d", game.PlaceId),
+			services = {},
+			assets = metas,
+			ok = true,
+			binary = Assets.base64(out),
+		}
 end
 
 -- A one-line summary of a finished job's JSON answer (cli `typetorch assets status|sync --json`).
@@ -196,15 +345,15 @@ function Assets.describeJob(job): string
 	end
 	local summary = `{counts.added} new, {counts.updated} changed, {counts.removed} removed, {counts.unchanged} unchanged`
 	if result.dryRun then
-		return if result.upToDate then `Up to date ({summary})` else `To sync: {summary}`
+		return if result.upToDate then `Up to date ({summary})` else `To publish: {summary}`
 	end
-	local text = `Synced: {summary}`
+	local text = `Uploaded: {summary}`
 	local deploy = result.deploy
 	if type(deploy) == "table" then
 		if deploy.proposal then
 			text ..= `. Deploy waits for approval: {deploy.approve or "typetorch approve"}`
 		else
-			text ..= ". Deployed"
+			text ..= ". Dev servers updated"
 		end
 	end
 	return text

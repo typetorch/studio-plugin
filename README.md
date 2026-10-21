@@ -2,7 +2,8 @@
 
 Attaches Roblox Studio to [`typetorch serve`](https://github.com/typetorch/cli) by itself and keeps it synced: no
 Connect button, no reconnecting by hand. It also lets an agent drive Studio (reconnect, play, stop, Output), pushes code
-into a running playtest (kernel 0.5.4+), and marks and syncs hot assets from a panel.
+into a running playtest (kernel 0.5.4+), and publishes hot assets from a panel: select a model or UI, **Add**, then
+**Publish to dev**, with no place publish first.
 
 ## Install
 
@@ -29,8 +30,12 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
 - `src/TypeTorch/Agent.luau`: in every DataModel (edit, playtest server and client): runs the commands an agent sends
   through `typetorch studio` / `typetorch mcp` (long poll on `/tt/plugin/poll`), forwards Studio's Output, and in edit
   mode reconnects when the `TypeTorchReconnect` attribute is set on ServerStorage.
-- `src/TypeTorch/Assets.luau`: hot assets in the place (mark, unmark, the sync's rules); the panel's Check / Sync /
-  Sync + deploy buttons run as jobs in `typetorch serve` (`POST /tt/jobs`).
+- `src/TypeTorch/Assets.luau`: hot assets in the place (add, remove, the sync's rules) and their export from the open
+  place (`SerializationService`, the same format as the CLI's export task); the panel's Check / Upload / Publish to dev
+  buttons send that export to `typetorch serve` as a job (`POST /tt/jobs`, `assets status|sync --studio-export`).
+- `src/TypeTorch/Icons.luau`: the toolbar button's icon per connection state (gray waiting, amber connecting, green
+  synced, red disconnected): `rbxassetid://<id>` of each image, once the TypeTorch icon set is picked and uploaded.
+  An empty id keeps Studio's default icon.
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
 - `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract).
 - `vendor/rojo/`: Rojo's plugin core, unchanged except where marked.
