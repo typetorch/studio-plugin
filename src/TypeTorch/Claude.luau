@@ -1,13 +1,16 @@
 --!nonstrict
 -- The Claude window: prompts Claude Code on the machine that runs `typetorch serve --claude` (remote-claude from
--- @typetorch/dev-server). A port of the in-game DEV > Claude tab (framework src/devtools/claude-ui.ts), Code mode only:
--- the same status line, bubbles, Markdown, tool lines, working dots, scroll-to-bottom button, composer and deploy card.
--- Studio has no screenshots, images, Toolbox grid or Live mode, so those are left out. Requests go through serve's
+-- @typetorch/dev-server). A port of the in-game DEV > Claude tab (framework src/devtools/claude-ui.ts): the same status
+-- line, bubbles, Markdown, tool lines, working dots, scroll-to-bottom button, composer, Live / Code pill, "+" menu
+-- (Dex path = the Studio selection, My logs, Server logs, Toolbox) and deploy card. Live needs a running game, so it
+-- works in Play only. Requests go through serve's
 -- control API (`/tt/claude/...`), locally or through a paired remote serve. The running prompt's events come over
 -- serve's WebSocket stream (`/tt/claude/stream`) as they happen, also in the Play client (which can't make HTTP
 -- requests but can open the stream); HTTP polling stands in while there is no stream.
 
 local HttpService = game:GetService("HttpService")
+local RunService = game:GetService("RunService")
+local Selection = game:GetService("Selection")
 local TextService = game:GetService("TextService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -179,6 +182,65 @@ local function autoFrame(parent: Instance?, order: number?): Frame
 		AutomaticSize = Enum.AutomaticSize.Y,
 		LayoutOrder = order or 0,
 	}, parent)
+end
+
+-- A glyph drawn from Frames for the "+" menu (claude-ui.ts menuIcon; no emojis or font glyphs).
+local function menuIcon(parent: Instance, kind: string, color: Color3): Frame
+	local box = make("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0, 10, 0.5, 0), Size = UDim2.fromOffset(16, 16) }, parent)
+	local function bar(x: number, y: number, w: number, h: number)
+		make("Frame", { BackgroundColor3 = color, BorderSizePixel = 0, Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h) }, box)
+	end
+	local function outline(x: number, y: number, w: number, h: number, round: number)
+		local frame = make("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(x, y), Size = UDim2.fromOffset(w, h) }, box)
+		corner(frame, round)
+		make("UIStroke", { Color = color, Thickness = 2, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, frame)
+	end
+	if kind == "dex" then
+		-- A small tree: a root bar and two indented children.
+		bar(0, 1, 10, 3)
+		bar(5, 7, 10, 3)
+		bar(5, 13, 10, 3)
+		bar(2, 4, 2, 11)
+	elseif kind == "logs" then
+		-- A page of lines.
+		bar(1, 2, 14, 2)
+		bar(1, 7, 10, 2)
+		bar(1, 12, 13, 2)
+	elseif kind == "server" then
+		-- Two stacked server boxes with a light each.
+		for _, y in { 1, 9 } do
+			outline(0, y, 16, 6, 2)
+			bar(11, y + 2, 2, 2)
+		end
+	elseif kind == "toolbox" then
+		-- A toolbox: a stroked body with a handle on top and a latch.
+		outline(5, 1, 6, 5, 2)
+		outline(0, 5, 16, 10, 2)
+		bar(7, 8, 2, 4)
+	end
+	return box
+end
+
+-- A small "x" button drawn from two Frames.
+local function removeButton(parent: Instance, order: number, onClick: () -> ())
+	local remove = make("TextButton", { AutoButtonColor = true, Text = "", BackgroundTransparency = 1, Size = UDim2.fromOffset(20, 20), LayoutOrder = order }, parent)
+	for _, angle in { 45, -45 } do
+		make("Frame", { BackgroundColor3 = COLORS.dim, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(10, 2), Rotation = angle }, remove)
+	end
+	remove.Activated:Connect(onClick)
+	return remove
+end
+
+local function modeName(mode: string): string
+	return if mode == "live" then "Live" else "Code"
+end
+
+-- The Studio DataModel this copy runs in, as the "Dex path" realm.
+local function realm(): string
+	if RunService:IsEdit() then
+		return "edit"
+	end
+	return if RunService:IsServer() then "server" else "client"
 end
 
 -- Markdown ---------------------------------------------------------------------------------------------------------
@@ -478,6 +540,11 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 	self.streamFailures = 0
 	self.streamRetryAt = -math.huge
 	self.lastPush = -math.huge
+	-- Live / Code for the next message, remembered per conversation (in this copy).
+	self.mode = "code"
+	self.modes = {} :: { [string]: string }
+	-- The "+" menu's context for the next messages; the Toolbox goes with one message only.
+	self.attach = { path = false, myLogs = false, serverLogs = false, toolbox = false }
 
 	local button = toolbar:CreateButton("TypeTorchClaude", "Prompt Claude Code on the typetorch serve machine", "", "Claude")
 	button.ClickableWhenViewportHidden = true
@@ -688,10 +755,54 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 	end)
 	fitBox()
 
+	-- Chips for the context that goes with the next message (from the "+" menu).
+	local chips = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 1, Visible = false }, composer)
+	make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4), Wraps = true }, chips)
+	self.chips = chips
+
 	local actions = make("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, ROUND), LayoutOrder = 3, ZIndex = 5 }, composer)
-	local modeTag = style(make("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, -(ROUND + 8), 1, 0) }, actions), "Code: edits the dev branch", SMALL, DIMMER, FONT)
-	modeTag.TextWrapped = false
-	modeTag.TextTruncate = Enum.TextTruncate.AtEnd
+	local plusButton = roundButton(actions, COLORS.button)
+	for _, size in { { 12, 2 }, { 2, 12 } } do
+		make("Frame", { BackgroundColor3 = COLORS.text, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(size[1], size[2]) }, plusButton)
+	end
+	-- Live / Code: which tools Claude gets for the next message. A pill next to "+".
+	local modeButton = make("TextButton", {
+		AutoButtonColor = true,
+		Text = "",
+		BackgroundColor3 = COLORS.button,
+		BorderSizePixel = 0,
+		Position = UDim2.fromOffset(ROUND + 6, 0),
+		Size = UDim2.fromOffset(0, ROUND),
+		AutomaticSize = Enum.AutomaticSize.X,
+	}, actions)
+	corner(modeButton, ROUND / 2)
+	make("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 12) }, modeButton)
+	make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center, Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }, modeButton)
+	local modeDot = make("Frame", { BorderSizePixel = 0, Size = UDim2.fromOffset(8, 8), LayoutOrder = 1 }, modeButton)
+	corner(modeDot, 4)
+	local modeText = style(make("TextLabel", { BackgroundTransparency = 1, LayoutOrder = 2 }, modeButton), "", SMALL, COLORS.text, Enum.Font.BuilderSansMedium)
+	modeText.TextWrapped = false
+	modeText.Size = UDim2.fromOffset(0, ROUND)
+	modeText.AutomaticSize = Enum.AutomaticSize.X
+	self.paintMode = function()
+		local mode = self:currentMode()
+		modeText.Text = modeName(mode)
+		modeDot.BackgroundColor3 = if mode == "live" then COLORS.good else COLORS.info
+	end
+	modeButton.Activated:Connect(function()
+		local picked = if self:currentMode() == "live" then "code" else "live"
+		if picked == "live" and RunService:IsEdit() then
+			-- Live acts on a running game server: Edit has none.
+			return self:notify("Live works during Play", COLORS.warn)
+		end
+		self.mode = picked
+		if self.conversationId then
+			self.modes[self.conversationId] = picked
+		end
+		self:notify("")
+		self.paintMode()
+	end)
+	self.paintMode()
 	local sendButton = roundButton(actions, COLORS.accent)
 	sendButton.AnchorPoint = Vector2.new(1, 0)
 	sendButton.Position = UDim2.fromScale(1, 0)
@@ -716,6 +827,147 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 			self:send()
 		end
 	end)
+
+	-- "+" menu: a floating panel just above "+" (claude-ui.ts): toggles with a checkmark when on. A transparent
+	-- catcher over the whole window closes it on an outside click (a dock widget's clicks don't reach
+	-- UserInputService). Both are the widget's own children, so the window's layout leaves them alone.
+	local attach = self.attach
+	local items = {
+		{ name = "Dex path", icon = "dex", key = "path" },
+		{ name = "My logs", icon = "logs", key = "myLogs" },
+		{ name = "Server logs", icon = "server", key = "serverLogs", playOnly = true },
+		-- The Creator Store for the next message only: without it Claude gets no toolbox tools at all.
+		{ name = "Toolbox", icon = "toolbox", key = "toolbox", accent = true },
+	}
+	local MENU_WIDTH = 210
+	local MENU_ROW = 36
+	local MENU_PAD = 6
+	local MENU_GAP = 2
+	local MENU_HEIGHT = #items * MENU_ROW + (#items - 1) * MENU_GAP + MENU_PAD * 2
+	local catcher = make("TextButton", { AutoButtonColor = false, Text = "", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Visible = false, ZIndex = 10 }, widget)
+	local menu = make("Frame", { Name = "PlusMenu", BackgroundTransparency = 1, AnchorPoint = Vector2.new(0, 1), Size = UDim2.fromOffset(MENU_WIDTH, MENU_HEIGHT), Visible = false, ZIndex = 20 }, widget)
+	local shadow = make("Frame", { BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.6, BorderSizePixel = 0, Position = UDim2.fromOffset(2, 3), Size = UDim2.fromScale(1, 1), ZIndex = 19 }, menu)
+	corner(shadow, 12)
+	local panel = make("Frame", { BackgroundColor3 = COLORS.header, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), ZIndex = 20 }, menu)
+	corner(panel, 12)
+	stroke(panel, COLORS.stroke)
+	pad(panel, MENU_PAD, MENU_PAD)
+	make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, MENU_GAP) }, panel)
+	local checks = {}
+	local paintToggles
+	for index, item in items do
+		local row = make("TextButton", {
+			AutoButtonColor = false,
+			Text = "",
+			BackgroundColor3 = COLORS.button,
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Size = UDim2.new(1, 0, 0, MENU_ROW),
+			LayoutOrder = index,
+			ZIndex = 21,
+		}, panel)
+		corner(row, 8)
+		local disabled = item.playOnly and RunService:IsEdit()
+		local color = if disabled then DIMMER else COLORS.text
+		local icon = menuIcon(row, item.icon, color)
+		for _, part in { icon, table.unpack(icon:GetDescendants()) } do
+			if part:IsA("GuiObject") then
+				part.ZIndex = 22
+			end
+		end
+		local text = style(make("TextLabel", { BackgroundTransparency = 1, ZIndex = 22 }, row), item.name, SMALL, color, FONT)
+		text.TextWrapped = false
+		text.Position = UDim2.fromOffset(36, 0)
+		text.Size = UDim2.new(1, -64, 1, 0)
+		-- A checkmark on the right while a toggle is on (two Frames).
+		local check = make("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, -10, 0.5, 0), Size = UDim2.fromOffset(14, 14), Visible = false, ZIndex = 22 }, row)
+		make("Frame", { BackgroundColor3 = COLORS.accent, BorderSizePixel = 0, Position = UDim2.fromOffset(0, 7), Size = UDim2.fromOffset(6, 2), Rotation = 45, ZIndex = 22 }, check)
+		make("Frame", { BackgroundColor3 = COLORS.accent, BorderSizePixel = 0, Position = UDim2.fromOffset(3, 5), Size = UDim2.fromOffset(11, 2), Rotation = -50, ZIndex = 22 }, check)
+		checks[item] = check
+		row.MouseEnter:Connect(function()
+			row.BackgroundTransparency = if disabled then 1 else 0
+		end)
+		row.MouseLeave:Connect(function()
+			row.BackgroundTransparency = 1
+		end)
+		row.Activated:Connect(function()
+			if disabled then
+				return self:notify("Server logs work during Play", COLORS.warn)
+			end
+			attach[item.key] = not attach[item.key]
+			paintToggles()
+		end)
+	end
+	local menuOpen = false
+	-- Bottom-left 6 px above "+", kept inside the window horizontally.
+	local function placeMenu()
+		local at = plusButton.AbsolutePosition - host.AbsolutePosition
+		local x = math.clamp(at.X, 4, math.max(4, host.AbsoluteSize.X - MENU_WIDTH - 4))
+		menu.Position = UDim2.fromOffset(x, at.Y - 6)
+	end
+	local function closeMenu()
+		if not menuOpen then
+			return
+		end
+		menuOpen = false
+		catcher.Visible = false
+		popOut(menu)
+	end
+	self.closeMenu = closeMenu
+	plusButton.Activated:Connect(function()
+		if menuOpen then
+			return closeMenu()
+		end
+		menuOpen = true
+		placeMenu()
+		catcher.Visible = true
+		popIn(menu)
+	end)
+	catcher.Activated:Connect(closeMenu)
+	host:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		if menuOpen then
+			placeMenu()
+		end
+	end)
+
+	paintToggles = function()
+		for _, child in chips:GetChildren() do
+			if child:IsA("GuiObject") then
+				child:Destroy()
+			end
+		end
+		local count = 0
+		for index, item in items do
+			local on = attach[item.key] == true
+			checks[item].Visible = on
+			if not on then
+				continue
+			end
+			count += 1
+			local chip = make("Frame", { BackgroundColor3 = COLORS.button, BorderSizePixel = 0, Size = UDim2.fromOffset(0, 24), AutomaticSize = Enum.AutomaticSize.X, LayoutOrder = index }, chips)
+			corner(chip, 12)
+			make("UIPadding", { PaddingLeft = UDim.new(0, 10), PaddingRight = UDim.new(0, 4) }, chip)
+			make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, chip)
+			local text = style(make("TextLabel", { BackgroundTransparency = 1, LayoutOrder = 1 }, chip), item.name, SMALL, COLORS.text, FONT)
+			text.TextWrapped = false
+			text.Size = UDim2.fromOffset(0, 24)
+			text.AutomaticSize = Enum.AutomaticSize.X
+			if item.accent then
+				chip.BackgroundColor3 = COLORS.accent
+				text.TextColor3 = COLORS.dark
+				-- The item's glyph in front of the text (menuIcon places itself; a holder keeps it in the chip's layout).
+				local glyph = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromOffset(16, 24), LayoutOrder = 0 }, chip)
+				menuIcon(glyph, item.icon, COLORS.dark).Position = UDim2.new(0, 0, 0.5, 0)
+			end
+			removeButton(chip, 2, function()
+				attach[item.key] = false
+				paintToggles()
+			end)
+		end
+		chips.Visible = count > 0
+	end
+	self.paintToggles = paintToggles
+	paintToggles()
 
 	self:paintComposer()
 	self:paintEmpty()
@@ -798,6 +1050,12 @@ function Claude:refreshStatus()
 	end
 end
 
+-- The mode of the next message: the conversation's, else the last one picked. Edit has no game for Live.
+function Claude:currentMode(): string
+	local mode = (self.conversationId and self.modes[self.conversationId]) or self.mode
+	return if mode == "live" and RunService:IsEdit() then "code" else mode
+end
+
 function Claude:running(): boolean
 	return self.active ~= nil and not self.active.finished
 end
@@ -820,7 +1078,7 @@ function Claude:fitBubble(bubble)
 	bubble.frame.Size = UDim2.fromOffset(math.min(max, math.ceil(size.X) + 26), 0)
 end
 
-function Claude:buildMessage(id: string, prompt: string)
+function Claude:buildMessage(id: string, prompt: string, mode: string?)
 	self.order += 1
 	local frame = autoFrame(self.list, self.order)
 	list(frame, 8)
@@ -833,7 +1091,7 @@ function Claude:buildMessage(id: string, prompt: string)
 		Padding = UDim.new(0, 6),
 	}, userRow)
 	-- The mode the message was sent in: a tiny dim tag at the bubble's bottom-left.
-	local modeTag = style(make("TextLabel", { BackgroundTransparency = 1, LayoutOrder = 1 }, userRow), "code", SMALL - 2, DIMMER, FONT)
+	local modeTag = style(make("TextLabel", { BackgroundTransparency = 1, LayoutOrder = 1 }, userRow), mode or "code", SMALL - 2, DIMMER, FONT)
 	modeTag.TextWrapped = false
 	modeTag.Size = UDim2.fromOffset(0, LINE)
 	modeTag.AutomaticSize = Enum.AutomaticSize.X
@@ -869,6 +1127,7 @@ function Claude:buildMessage(id: string, prompt: string)
 		tools = {},
 		outcome = outcome,
 		dots = dots,
+		modeTag = modeTag,
 	}
 end
 
@@ -1184,6 +1443,9 @@ function Claude:applyView(message, reply)
 	message.error = reply.error or message.error
 	message.proposal = reply.proposal or message.proposal
 	message.finished = FINISHED[message.state] == true
+	if reply.mode == "live" or reply.mode == "code" then
+		message.modeTag.Text = reply.mode
+	end
 	self:paintOutcome(message)
 	if message.finished then
 		self:paintComposer()
@@ -1376,6 +1638,7 @@ function Claude:restore()
 	self:clearTranscript()
 	self.chatKey = key
 	self.conversationId = saved.conversationId
+	self.paintMode()
 	local texts = if type(saved.texts) == "table" then saved.texts else {}
 	local myView = self.view
 	for _, id in saved.prompts do
@@ -1423,19 +1686,50 @@ function Claude:send()
 		return self:notify(errorText("too_long"), COLORS.warn)
 	end
 	self.sending = true
+	self.closeMenu()
 	self.box.Text = ""
+	local mode = self:currentMode()
+	local attach = self.attach
+	local toolbox = attach.toolbox
 	-- The bubble and the working dots show at once; the message gets its id when serve answers.
-	local message = self:addPending(prompt)
+	local message = self:addPending(prompt, mode)
 	task.spawn(function()
-		local ok, reply = self:request("POST", "/tt/claude/prompt", { prompt = prompt, conversationId = self.conversationId, user = userId() })
+		local body = { prompt = prompt, mode = mode, conversationId = self.conversationId, user = userId(), toolbox = if toolbox then true else nil }
+		local context, logs = {}, {}
+		if attach.path then
+			-- "Dex path": the Studio selection, as "<realm> <full name>".
+			local selected = Selection:Get()[1]
+			if selected and selected ~= game then
+				context.path = string.sub(`{realm()} {selected:GetFullName()}`, 1, 1024)
+			end
+		end
+		if attach.myLogs then
+			logs.client = Control.logHistory()
+		end
+		if attach.serverLogs and not RunService:IsEdit() then
+			if Control.viaBridge then
+				local ok, text = Control.serverLogs()
+				logs.server = if ok and type(text) == "string" then text else nil
+			else
+				logs.server = Control.logHistory()
+			end
+		end
+		if next(logs) then
+			context.logs = logs
+		end
+		if next(context) then
+			body.context = context
+		end
+		local ok, reply = self:request("POST", "/tt/claude/prompt", body)
 		local restarted = false
 		if not ok and self.conversationId ~= nil and isNotFound(reply) then
 			-- The dev machine forgot the chat (it restarted): start a new one with the same message.
 			restarted = true
 			self.conversationId = nil
 			self:clearTranscript()
-			message = self:addPending(prompt)
-			ok, reply = self:request("POST", "/tt/claude/prompt", { prompt = prompt, user = userId() })
+			message = self:addPending(prompt, mode)
+			body.conversationId = nil
+			ok, reply = self:request("POST", "/tt/claude/prompt", body)
 		end
 		self.sending = false
 		if not ok or type(reply) ~= "table" or type(reply.id) ~= "string" then
@@ -1447,6 +1741,14 @@ function Claude:send()
 		end
 		self:notify(if restarted then "The old chat was gone: started a new one" else "")
 		self.conversationId = reply.conversationId or self.conversationId
+		if self.conversationId then
+			self.modes[self.conversationId] = mode
+		end
+		-- The Toolbox goes with one message only.
+		if toolbox and attach.toolbox then
+			attach.toolbox = false
+			self.paintToggles()
+		end
 		message.id = reply.id
 		message.pending = nil
 		message.state = reply.state or message.state
@@ -1459,8 +1761,8 @@ function Claude:send()
 end
 
 -- A message being sent: shown at once, without an id until serve answers.
-function Claude:addPending(prompt: string)
-	local message = self:buildMessage("", prompt)
+function Claude:addPending(prompt: string, mode: string)
+	local message = self:buildMessage("", prompt, mode)
 	message.pending = true
 	table.insert(self.messages, message)
 	self.active = message
@@ -1510,6 +1812,7 @@ end
 
 function Claude:newChat()
 	self.conversationId = nil
+	self.paintMode()
 	self:clearTranscript()
 	self:save()
 	self:notify("")

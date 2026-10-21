@@ -63,6 +63,10 @@ function Control.serveBridge(key: string)
 	bridge.Name = BRIDGE_NAME
 	bridge.Archivable = false
 	bridge.OnServerInvoke = function(_player, sentKey, endpoint, method, path, body)
+		if sentKey == key and method == "LOGS" then
+			-- The Claude window's "Server logs" in the Play client: this (the playtest server's) log history.
+			return true, Control.logHistory()
+		end
 		if sentKey ~= key or type(method) ~= "string" or type(path) ~= "string" or string.sub(path, 1, 4) ~= "/tt/" then
 			return false, "refused"
 		end
@@ -124,6 +128,49 @@ function Control.request(endpoint: Endpoint, method: string, path: string, body:
 		return false, if type(decoded) == "table" and decoded.error then decoded.error else `HTTP {response.StatusCode}`
 	end
 	return true, decoded
+end
+
+-- The playtest server's log history, from the Play client (through the bridge). Returns (ok, text or error text).
+function Control.serverLogs(): (boolean, any)
+	return bridged(0, "LOGS", "", nil)
+end
+
+-- "My logs" / "Server logs" for the Claude window: about 64 KB, newest lines kept (framework devtools/claude-tools.ts
+-- LOG_ATTACH_BYTES and formatLogHistory).
+local LOG_ATTACH_BYTES = 64 * 1024
+local LOG_KINDS = {
+	[Enum.MessageType.MessageOutput] = "print",
+	[Enum.MessageType.MessageInfo] = "info",
+	[Enum.MessageType.MessageWarning] = "warn",
+	[Enum.MessageType.MessageError] = "error",
+}
+
+-- This DataModel's log history as text, one `[HH:MM:SS] kind text` line each (UTC), oldest first, keeping the newest
+-- lines that fit; a first line says how many older lines were dropped.
+function Control.logHistory(): string
+	local entries = game:GetService("LogService"):GetLogHistory()
+	local lines = {}
+	local bytes = 0
+	local dropped = 0
+	for index = #entries, 1, -1 do
+		local entry = entries[index]
+		local text = string.gsub(string.gsub(entry.message, "[\r\n]+", " "), "\0", "")
+		local line = `[{os.date("!%H:%M:%S", math.floor(entry.timestamp))}] {LOG_KINDS[entry.messageType] or "print"} {text}`
+		if bytes + #line + 1 > LOG_ATTACH_BYTES - 64 then
+			dropped = index
+			break
+		end
+		table.insert(lines, line)
+		bytes += #line + 1
+	end
+	local ordered = {}
+	if dropped > 0 then
+		table.insert(ordered, `({dropped} older lines dropped)`)
+	end
+	for index = #lines, 1, -1 do
+		table.insert(ordered, lines[index])
+	end
+	return table.concat(ordered, "\n")
 end
 
 -- serve's Claude event stream (`/tt/claude/stream`, a WebSocket): its URL and headers for an endpoint. A remote serve
