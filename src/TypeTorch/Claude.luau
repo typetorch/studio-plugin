@@ -476,6 +476,8 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 			self.lastStatus = -math.huge
 		end
 	end)
+	Widgets.keepOpen(plugin, widget)
+	button:SetActive(widget.Enabled)
 
 	local host = make("Frame", { BackgroundColor3 = COLORS.window, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1) }, widget)
 	list(host, 0)

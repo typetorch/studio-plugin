@@ -70,6 +70,7 @@ local state = {
 }
 
 local panel
+local createUi: (Plugin) -> ()
 
 local function settingKey(): string
 	return `TypeTorch_autoConnect_{if game.PlaceId ~= 0 then tostring(game.PlaceId) else "local"}`
@@ -321,7 +322,7 @@ local function statusLoop()
 				local ok, status = Control.request(state.server.port, "GET", "/tt/status")
 				state.status = if ok then status else nil
 			end
-			if ticks % ASSET_SCAN_EVERY == 0 then
+			if state.mode == "edit" and ticks % ASSET_SCAN_EVERY == 0 then
 				refreshAssets()
 			end
 			ticks += 1
@@ -694,18 +695,34 @@ function App.start(plugin: Plugin)
 		wake()
 	end)
 	loadRemote()
-	if not RunService:IsEdit() then
-		state.mode = if RunService:IsServer() then "server" else "client"
-		state.phase = "idle"
-		task.spawn(playtestLoop)
-		startAgent()
-		return
-	end
 	local saved = plugin:GetSetting(settingKey())
 	state.autoConnect = if saved == nil then true else saved == true
 	Log.setLogLevelThunk(function()
 		return Log.Level.Warning
 	end)
+	if not RunService:IsEdit() then
+		state.mode = if RunService:IsServer() then "server" else "client"
+		state.phase = "idle"
+		-- Studio shows the toolbar and windows of the DataModel in view: the client in Play, the server in Run. Without
+		-- them there, the TypeTorch and Claude buttons and windows vanish until Stop.
+		if RunService:IsClient() or RunService:IsRunMode() then
+			createUi(plugin)
+			render()
+			task.spawn(statusLoop)
+		end
+		task.spawn(playtestLoop)
+		startAgent()
+		return
+	end
+	createUi(plugin)
+	render()
+	task.spawn(loop)
+	task.spawn(statusLoop)
+	startAgent()
+end
+
+-- The TypeTorch panel and the Claude window (the same widget ids in every DataModel, so Studio keeps their layout).
+createUi = function(plugin: Plugin)
 	panel = Panel.new(plugin, {
 		reconnect = App.reconnect,
 		setAutoConnect = App.setAutoConnect,
@@ -721,10 +738,6 @@ function App.start(plugin: Plugin)
 	Claude.new(plugin, panel.toolbar, function()
 		return if state.server then state.server.port else nil
 	end)
-	render()
-	task.spawn(loop)
-	task.spawn(statusLoop)
-	startAgent()
 end
 
 return App

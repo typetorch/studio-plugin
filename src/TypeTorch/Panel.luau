@@ -20,6 +20,7 @@ local PHASES = {
 	connected = { "Synced", COLORS.good, Icons.synced },
 	disconnected = { "Disconnected, retrying", COLORS.bad, Icons.error },
 	paused = { "Paused", COLORS.dim, Icons.idle },
+	idle = { "Playtest", COLORS.dim, Icons.idle },
 }
 
 local MAX_ERRORS = 8
@@ -61,6 +62,8 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	widget:GetPropertyChangedSignal("Enabled"):Connect(function()
 		button:SetActive(widget.Enabled)
 	end)
+	Widgets.keepOpen(plugin, widget)
+	button:SetActive(widget.Enabled)
 
 	local background = make("Frame", { BackgroundColor3 = COLORS.window, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1) }, widget)
 	local scroll = Widgets.scrolling(background)
@@ -78,6 +81,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	self.project = Widgets.line(statusCard, "", 15)
 	self.lastSync = Widgets.line(statusCard, "", 14, COLORS.dim)
 	local buttons = Widgets.buttonRow(statusCard)
+	self.statusButtons = buttons
 	Widgets.button(buttons, "Reconnect", function()
 		actions.reconnect()
 	end)
@@ -91,6 +95,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 
 	-- Remote card: a typetorch serve on another machine (`serve --remote` behind the owner's tunnel)
 	local remoteCard = Widgets.card(scroll)
+	self.remoteCard = remoteCard
 	Widgets.line(remoteCard, "Remote server", 15, COLORS.text, Enum.Font.BuilderSansBold)
 	self.remoteLine = Widgets.line(remoteCard, "", 14, COLORS.dim)
 	self.remoteLink = Widgets.textBox(remoteCard, "pairing link, e.g. https://serve.example.com#code")
@@ -119,6 +124,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 
 	-- Hot assets card
 	local assetsCard = Widgets.card(scroll)
+	self.assetsCard = assetsCard
 	Widgets.line(assetsCard, "Hot assets", 15, COLORS.text, Enum.Font.BuilderSansBold)
 	self.assetsSummary = Widgets.line(assetsCard, "", 14, COLORS.dim)
 	self.assetLines = {}
@@ -211,7 +217,14 @@ function Panel:render(state)
 	self.livePlaytest = state.plugin == nil or state.plugin:GetSetting("TypeTorch_livePlaytest") ~= false
 	self.liveButton.Text = if self.livePlaytest then "Live playtest: on" else "Live playtest: off"
 
-	self:renderAssets(state)
+	-- A playtest's panel: status, playtest and compile only (pairing and hot assets act on the edit session).
+	local editing = state.mode == "edit"
+	self.statusButtons.Visible = editing
+	self.remoteCard.Visible = editing
+	self.assetsCard.Visible = editing
+	if editing then
+		self:renderAssets(state)
+	end
 
 	local remote = Control.remote
 	self.remoteLine.Text = if remote

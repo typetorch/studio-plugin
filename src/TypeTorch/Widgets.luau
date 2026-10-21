@@ -24,6 +24,20 @@ Widgets.BUTTON_HEIGHT = 34
 
 local COLORS = Widgets.COLORS
 
+-- Studio restores a dock widget's open state in Edit but opens Play/Run DataModels with it closed: Edit saves it
+-- to a plugin setting and the playtest DataModels reopen it from there.
+function Widgets.keepOpen(plugin: Plugin, widget: DockWidgetPluginGui)
+	local key = `TypeTorch.open.{widget.Name}`
+	if game:GetService("RunService"):IsEdit() then
+		plugin:SetSetting(key, widget.Enabled)
+		widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+			plugin:SetSetting(key, widget.Enabled)
+		end)
+	elseif plugin:GetSetting(key) == true then
+		widget.Enabled = true
+	end
+end
+
 function Widgets.make(className: string, props: { [string]: any }, parent: Instance?): any
 	local instance = Instance.new(className) :: any
 	for key, value in props do
