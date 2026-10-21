@@ -1,0 +1,4 @@
+*.rbxm
+*.rbxmx
+sourcemap.json
+node_modules/
