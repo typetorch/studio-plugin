@@ -2,8 +2,8 @@
 -- The Claude window: prompts Claude Code on the machine that runs `typetorch serve --claude` (remote-claude from
 -- @typetorch/dev-server). A port of the in-game DEV > Claude tab (framework src/devtools/claude-ui.ts): the same status
 -- line, bubbles, Markdown, tool lines, working dots, scroll-to-bottom button, composer, Live / Code pill, "+" menu
--- (Dex path = the Studio selection, My logs, Server logs, Toolbox) and deploy card. Live needs a running game, so it
--- works in Play only. Requests go through serve's
+-- (Dex path = the Studio selection, My logs, Server logs, Toolbox) and deploy card. Studio sends Code only: Live works
+-- from the in-game tab. Requests go through serve's
 -- control API (`/tt/claude/...`), locally or through a paired remote serve. The running prompt's events come over
 -- serve's WebSocket stream (`/tt/claude/stream`) as they happen, also in the Play client (which can't make HTTP
 -- requests but can open the stream); HTTP polling stands in while there is no stream.
@@ -932,17 +932,9 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 		modeDot.BackgroundColor3 = if mode == "live" then COLORS.good else COLORS.info
 	end
 	modeButton.Activated:Connect(function()
-		local picked = if self:currentMode() == "live" then "code" else "live"
-		if picked == "live" and RunService:IsEdit() then
-			-- Live acts on a running game server: Edit has none.
-			return self:notify("Live works during Play", COLORS.warn)
-		end
-		self.mode = picked
-		if self.conversationId then
-			self.modes[self.conversationId] = picked
-		end
-		self:notify("")
-		self.paintMode()
+		-- Live acts on a game server, which answers Claude's game tools only for the in-game tab (a playtest gets no
+		-- Claude session), so Studio sends Code only.
+		self:notify("Live works from the in-game DEV > Claude tab", COLORS.warn)
 	end)
 	self.paintMode()
 	local sendButton = roundButton(actions, COLORS.accent)
@@ -1230,10 +1222,10 @@ function Claude:refreshStatus()
 	end
 end
 
--- The mode of the next message: the conversation's, else the last one picked. Edit has no game for Live.
+-- The mode of the next message: always Code from Studio (Live works from the in-game DEV > Claude tab), even in a
+-- conversation the in-game tab started in Live.
 function Claude:currentMode(): string
-	local mode = (self.conversationId and self.modes[self.conversationId]) or self.mode
-	return if mode == "live" and RunService:IsEdit() then "code" else mode
+	return "code"
 end
 
 function Claude:running(): boolean
