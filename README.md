@@ -1,3 +1,5 @@
+<img src="https://raw.githubusercontent.com/typetorch/docs/main/brand/typetorch.svg" width="64" alt="TypeTorch logo">
+
 # TypeTorch Studio plugin
 
 Attaches Roblox Studio to [`typetorch serve`](https://github.com/typetorch/cli) by itself and keeps it synced: no
@@ -39,6 +41,9 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
 - `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract).
 - `vendor/rojo/`: Rojo's plugin core, unchanged except where marked.
+- `assets/toolbar-icon.png` (32 px) and `toolbar-icon@2x.png` (64 px): the TypeTorch logo for the toolbar button. Upload
+  the 32 px one as an image asset and put its `rbxassetid://` in `TOOLBAR_ICON` (`Panel.luau`). The logo's source is
+  `brand/` in typetorch/docs.
 
 ## Rojo (vendored, MPL-2.0)
 

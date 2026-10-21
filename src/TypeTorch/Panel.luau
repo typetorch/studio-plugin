@@ -10,6 +10,10 @@ local make = Widgets.make
 local Panel = {}
 Panel.__index = Panel
 
+-- The toolbar button's icon: assets/toolbar-icon.png (the TypeTorch logo) uploaded as a Roblox image. Empty shows
+-- Studio's default icon until it is uploaded. A phase's own status icon (Icons.luau), once set, replaces it.
+local TOOLBAR_ICON = ""
+
 -- { label, dot color, toolbar icon }
 local PHASES = {
 	waiting = { "Waiting for typetorch serve", COLORS.dim, Icons.idle },
@@ -42,7 +46,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	local self = setmetatable({}, Panel)
 	self.actions = actions
 	local toolbar = plugin:CreateToolbar("TypeTorch")
-	local button = toolbar:CreateButton("TypeTorchSync", "TypeTorch sync status", Icons.idle, "TypeTorch")
+	local button = toolbar:CreateButton("TypeTorchSync", "TypeTorch sync status", if Icons.idle ~= "" then Icons.idle else TOOLBAR_ICON, "TypeTorch")
 	button.ClickableWhenViewportHidden = true
 	self.button = button
 	local widget = plugin:CreateDockWidgetPluginGuiAsync(
