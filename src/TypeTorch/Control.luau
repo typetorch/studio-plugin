@@ -4,6 +4,7 @@
 -- token, sent as `Authorization: Bearer`. With a remote set (Control.remote), discovery asks only it.
 
 local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Control = {}
 
@@ -49,8 +50,52 @@ function Control.describe(endpoint: Endpoint): string
 	return if type(endpoint) == "table" then endpoint.url else `port {endpoint}`
 end
 
+-- In Play the client DataModel can't make HTTP requests (only the game server can), so the server DataModel's copy
+-- of the plugin relays them through a RemoteFunction. Calls carry a key from the plugin settings, which game scripts
+-- can't read.
+local BRIDGE_NAME = "TypeTorchPluginBridge"
+Control.bridgeKey = nil :: (() -> string?)?
+Control.viaBridge = false
+
+-- The server side: relays the client copy's requests to serve's control API.
+function Control.serveBridge(key: string)
+	local bridge = Instance.new("RemoteFunction")
+	bridge.Name = BRIDGE_NAME
+	bridge.Archivable = false
+	bridge.OnServerInvoke = function(_player, sentKey, endpoint, method, path, body)
+		if sentKey ~= key or type(method) ~= "string" or type(path) ~= "string" or string.sub(path, 1, 4) ~= "/tt/" then
+			return false, "refused"
+		end
+		if type(endpoint) == "table" then
+			if not Control.remote or endpoint.url ~= Control.remote.url then
+				return false, "refused"
+			end
+			endpoint = Control.remote
+		elseif not table.find(Control.PORTS, endpoint) then
+			return false, "refused"
+		end
+		return Control.request(endpoint, method, path, body)
+	end
+	bridge.Parent = ReplicatedStorage
+end
+
+local function bridged(endpoint: Endpoint, method: string, path: string, body: any?): (boolean, any)
+	local bridge = ReplicatedStorage:FindFirstChild(BRIDGE_NAME)
+	if not bridge then
+		return false, "waiting for the playtest server"
+	end
+	local ok, success, result = pcall(bridge.InvokeServer, bridge, Control.bridgeKey and Control.bridgeKey(), endpoint, method, path, body)
+	if not ok then
+		return false, tostring(success)
+	end
+	return success == true, result
+end
+
 -- One request; returns (ok, decoded body or error text). Never throws.
 function Control.request(endpoint: Endpoint, method: string, path: string, body: any?): (boolean, any)
+	if Control.viaBridge then
+		return bridged(endpoint, method, path, body)
+	end
 	local headers = { ["X-TypeTorch"] = "1", ["Content-Type"] = "application/json" }
 	local url
 	if type(endpoint) == "table" then

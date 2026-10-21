@@ -42,6 +42,8 @@ local LIVE_SETTING = "TypeTorch_livePlaytest"
 local REMOTE_SETTING = "TypeTorch_remote"
 -- Must match REMOTE_DEFAULT_PORT in cli src/serve/remote.ts.
 local LOCAL_GATEWAY_PORT = 34890
+-- The key the Play client's requests carry through the server's bridge (Control.serveBridge); Edit makes it.
+local BRIDGE_SETTING = "TypeTorch_bridgeKey"
 
 type Server = { port: Control.Endpoint, hello: Control.Hello }
 
@@ -122,7 +124,8 @@ end
 -- Tells serve what this plugin is doing (also its heartbeat). Failures are fine: serve may be gone.
 local function report()
 	local server = state.server
-	if not server then
+	-- The Play client's copy only shows status: the server's copy reports for the playtest.
+	if not server or state.mode == "client" then
 		return
 	end
 	local status = if state.phase == "connected"
@@ -662,7 +665,10 @@ local function playtestLoop()
 		if server and (not state.server or state.server.hello.pid ~= server.hello.pid) then
 			stopSession() -- serve restarted: start over
 			state.server = server
-			Control.request(server.port, "POST", "/tt/plugin/hello", App.helloBody())
+			-- The client only shows status and the Claude window: the server's copy is the playtest's plugin.
+			if state.mode ~= "client" then
+				Control.request(server.port, "POST", "/tt/plugin/hello", App.helloBody())
+			end
 		elseif not server then
 			stopSession()
 			state.server = nil
@@ -687,6 +693,15 @@ local function playtestLoop()
 	end
 end
 
+local function bridgeKey(plugin: Plugin): string
+	local key = plugin:GetSetting(BRIDGE_SETTING)
+	if type(key) ~= "string" then
+		key = HttpService:GenerateGUID(false)
+		plugin:SetSetting(BRIDGE_SETTING, key)
+	end
+	return key
+end
+
 function App.start(plugin: Plugin)
 	state.plugin = plugin
 	plugin.Unloading:Connect(function()
@@ -703,6 +718,14 @@ function App.start(plugin: Plugin)
 	if not RunService:IsEdit() then
 		state.mode = if RunService:IsServer() then "server" else "client"
 		state.phase = "idle"
+		if state.mode == "client" then
+			Control.viaBridge = true
+			Control.bridgeKey = function()
+				return plugin:GetSetting(BRIDGE_SETTING)
+			end
+		elseif not RunService:IsRunMode() then
+			Control.serveBridge(bridgeKey(plugin))
+		end
 		-- Studio shows the toolbar and windows of the DataModel in view: the client in Play, the server in Run. Without
 		-- them there, the TypeTorch and Claude buttons and windows vanish until Stop.
 		if RunService:IsClient() or RunService:IsRunMode() then
@@ -711,9 +734,12 @@ function App.start(plugin: Plugin)
 			task.spawn(statusLoop)
 		end
 		task.spawn(playtestLoop)
-		startAgent()
+		if state.mode ~= "client" then
+			startAgent()
+		end
 		return
 	end
+	bridgeKey(plugin)
 	createUi(plugin)
 	render()
 	task.spawn(loop)

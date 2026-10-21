@@ -5,6 +5,7 @@
 -- Studio has no screenshots, images, Toolbox grid or Live mode, so those are left out. Requests go through serve's
 -- control API (`/tt/claude/...`), locally or through a paired remote serve.
 
+local HttpService = game:GetService("HttpService")
 local TextService = game:GetService("TextService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -442,12 +443,21 @@ local function toolLine(event): string
 	return if tool ~= "" then tool else (event.text or "")
 end
 
+-- The chat (its id and prompt ids) is kept on serve (`/tt/claude/chat`), so every DataModel shows the same one: the
+-- Play copy picks it up, and Edit after Stop. Plugin settings can't: a playtest's copy doesn't see Edit's.
+local KEEP_MESSAGES = 20
+local CATCH_UP_PAGES = 50
+local CHAT_CHECK = 2
+
 -- The window ---------------------------------------------------------------------------------------------------------
 
 -- `toolbar`: the TypeTorch toolbar (Panel). `endpoint()`: the serve this Studio is attached to, or nil.
 function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Control.Endpoint?)
 	local self = setmetatable({}, Claude)
 	self.endpoint = endpoint
+	self.rev = nil :: string?
+	self.lastChatCheck = -math.huge
+	self.saving = 0
 	self.conversationId = nil :: string?
 	self.messages = {}
 	self.bubbles = {}
@@ -726,6 +736,7 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 				if widget.Enabled and os.clock() - self.lastStatus >= STATUS_REFRESH then
 					self:refreshStatus()
 				end
+				self:restore()
 				self:poll()
 			end)
 			if not ok then
@@ -1154,10 +1165,15 @@ function Claude:poll()
 	if not message or message.finished then
 		return
 	end
+	self:fetch(message, 5)
+end
+
+-- Up to `pages` pages of a message's new events.
+function Claude:fetch(message, pages: number)
 	local myView = self.view
-	for _ = 1, 5 do
+	for _ = 1, pages do
 		local ok, reply = self:request("GET", `/tt/claude/prompt?id={message.id}&since={message.cursor}&user={userId()}`)
-		if myView ~= self.view or self.active ~= message then
+		if myView ~= self.view then
 			return
 		end
 		if not ok or type(reply) ~= "table" then
@@ -1186,6 +1202,55 @@ function Claude:poll()
 			return
 		end
 	end
+end
+
+-- Sends the chat (its id and the last prompts) to serve.
+function Claude:save()
+	local prompts = {}
+	for index = math.max(1, #self.messages - KEEP_MESSAGES + 1), #self.messages do
+		local message = self.messages[index]
+		table.insert(prompts, { id = message.id, prompt = message.prompt })
+	end
+	self.rev = HttpService:GenerateGUID(false)
+	local chat = { rev = self.rev, conversationId = self.conversationId, prompts = prompts }
+	self.saving += 1
+	task.spawn(function()
+		self:request("POST", "/tt/claude/chat", { user = userId(), chat = chat })
+		self.saving -= 1
+	end)
+end
+
+-- Rebuilds the chat when another DataModel's copy changed it (or on load): each prompt and its replies from serve.
+function Claude:restore()
+	if self.endpoint() == nil or self.sending or self.saving > 0 or os.clock() - self.lastChatCheck < CHAT_CHECK then
+		return
+	end
+	self.lastChatCheck = os.clock()
+	local ok, reply = self:request("GET", `/tt/claude/chat?user={userId()}`)
+	local saved = ok and type(reply) == "table" and reply.chat
+	if type(saved) ~= "table" or saved.rev == self.rev or self.sending or self.saving > 0 then
+		return
+	end
+	self:clearTranscript()
+	self.rev = saved.rev
+	self.conversationId = saved.conversationId
+	local myView = self.view
+	for _, entry in (if type(saved.prompts) == "table" then saved.prompts else {}) do
+		local message = self:buildMessage(entry.id, entry.prompt)
+		table.insert(self.messages, message)
+		self.failures = 0
+		self:fetch(message, CATCH_UP_PAGES)
+		if myView ~= self.view then
+			return
+		end
+		self:paintOutcome(message)
+	end
+	local last = self.messages[#self.messages]
+	self.active = if last and not last.finished then last else nil
+	self.failures = 0
+	self:paintEmpty()
+	self:paintComposer()
+	self.scrollToEnd()
 end
 
 function Claude:clearTranscript()
@@ -1240,6 +1305,7 @@ function Claude:send()
 		table.insert(self.messages, message)
 		self.active = message
 		self.failures = 0
+		self:save()
 		self:paintOutcome(message)
 		self:paintEmpty()
 		self:paintComposer()
@@ -1269,6 +1335,7 @@ end
 function Claude:newChat()
 	self.conversationId = nil
 	self:clearTranscript()
+	self:save()
 	self:notify("")
 end
 
