@@ -243,6 +243,86 @@ local function realm(): string
 	return if RunService:IsServer() then "server" else "client"
 end
 
+-- Emojis Claude might still send, as text where the meaning would be lost (claude-ui.ts EMOJI_TEXT).
+local EMOJI_TEXT = { [0x2705] = "ok", [0x2714] = "ok", [0x274c] = "failed", [0x2716] = "failed", [0x26a0] = "warning", [0x23ed] = "skipped" }
+
+local function isEmoji(code: number): boolean
+	return (code >= 0x1f000 and code <= 0x1faff)
+		or (code >= 0x2600 and code <= 0x27bf)
+		or (code >= 0x2b00 and code <= 0x2bff)
+		or (code >= 0x23e9 and code <= 0x23fa)
+		or code == 0xfe0f
+		or code == 0x200d
+end
+
+-- No emojis in the UI (user rule): drops them, keeping a word for the few that carry meaning.
+local function stripEmoji(text: string): string
+	if not utf8.len(text) then
+		return text
+	end
+	local plain = true
+	for _, code in utf8.codes(text) do
+		if isEmoji(code) then
+			plain = false
+			break
+		end
+	end
+	if plain then
+		return text
+	end
+	local out = {}
+	for _, code in utf8.codes(text) do
+		local word = EMOJI_TEXT[code]
+		if word then
+			table.insert(out, word)
+		elseif not isEmoji(code) then
+			table.insert(out, utf8.char(code))
+		end
+	end
+	return table.concat(out)
+end
+
+-- Toolbox --------------------------------------------------------------------------------------------------------------
+
+-- A Creator Store thumbnail (the engine resolves rbxthumb).
+local function toolboxThumb(id: number): string
+	return `rbxthumb://type=Asset&id={id}&w=150&h=150`
+end
+
+-- 7000 -> "7k", 1250000 -> "1.3M".
+local function compactNumber(value: number): string
+	if value >= 1e6 then
+		return `{math.floor(value / 1e5) / 10}M`
+	elseif value >= 1e3 then
+		return (string.gsub(`{math.floor(value / 100) / 10}k`, "%.0k", "k"))
+	end
+	return tostring(math.floor(value))
+end
+
+-- The verified-creator check: two Frames in a small circle (no glyph characters).
+local function verifiedMark(parent: Instance, order: number)
+	local badge = make("Frame", { BackgroundColor3 = COLORS.info, BorderSizePixel = 0, Size = UDim2.fromOffset(12, 12), LayoutOrder = order }, parent)
+	corner(badge, 6)
+	make("Frame", { BackgroundColor3 = COLORS.dark, BorderSizePixel = 0, Position = UDim2.fromOffset(2, 6), Size = UDim2.fromOffset(4, 2), Rotation = 45 }, badge)
+	make("Frame", { BackgroundColor3 = COLORS.dark, BorderSizePixel = 0, Position = UDim2.fromOffset(4, 5), Size = UDim2.fromOffset(7, 2), Rotation = -50 }, badge)
+	return badge
+end
+
+-- One short line of tile facts: "0 scripts" (good) or "2 scripts" (warn), the length, the vote share.
+local function toolboxFacts(tile): string
+	local parts = {}
+	if type(tile.scripts) == "number" then
+		table.insert(parts, `<font color="{hex(if tile.scripts == 0 then COLORS.good else COLORS.warn)}">{tile.scripts} scripts</font>`)
+	end
+	if type(tile.seconds) == "number" then
+		table.insert(parts, `{tile.seconds}s`)
+	end
+	if type(tile.upPercent) == "number" then
+		table.insert(parts, `{tile.upPercent}%`)
+	end
+	return table.concat(parts, "  ")
+end
+
 -- Markdown ---------------------------------------------------------------------------------------------------------
 
 -- A GFM table as monospace text: columns padded to the widest cell, a rule under the header.
@@ -507,6 +587,14 @@ local function toolLine(event): string
 		return "Searched the game"
 	elseif tool == "game_status" then
 		return "Checked server status"
+	elseif tool == "screenshot" then
+		return "Screenshot"
+	elseif tool == "toolbox_search" then
+		return "Searched the Toolbox"
+	elseif tool == "toolbox_insert" then
+		return "Toolbox insert"
+	elseif tool == "toolbox_add" then
+		return "Added a Toolbox asset"
 	end
 	return if tool ~= "" then tool else (event.text or "")
 end
@@ -1541,25 +1629,102 @@ function Claude:applyEvents(message, events)
 				segment.dot.BackgroundColor3 = if segment.failed then COLORS.bad else DIMMER
 				-- The short result after the call, darker.
 				if not segment.failed then
-					segment.line.Text = `{escapeRich(toolLine(segment.event))}  <font color="{hex(RESULT_DIM)}">{escapeRich(string.sub(text, 1, 60))}</font>`
+					segment.line.Text = `{escapeRich(toolLine(segment.event))}  <font color="{hex(RESULT_DIM)}">{escapeRich(string.sub(stripEmoji(text), 1, 60))}</font>`
 				else
-					segment.problem.Text = string.sub((string.gsub(string.sub(text, 7), "^%s+", "")), 1, 140)
+					segment.problem.Text = string.sub(stripEmoji((string.gsub(string.sub(text, 7), "^%s+", ""))), 1, 140)
 					segment.problem.Visible = true
 				end
 			end
 		elseif kind == "deploy_proposal" then
 			self:addProposalCard(message, event)
+		elseif kind == "toolbox_results" and type(event.tiles) == "table" then
+			self:addToolboxResults(message, event.tiles)
 		elseif kind == "error" then
 			self:addNote(message, errorText(event.text), COLORS.bad)
 		elseif kind == "status" and event.state == nil then
-			self:addNote(message, event.text, DIMMER)
+			self:addNote(message, stripEmoji(event.text or ""), DIMMER)
 		end
 	end
 	for _, segment in message.segments do
 		if segment.kind == "text" and segment.dirty then
 			segment.dirty = false
-			syncBlocks(segment.holder, segment.rendered, parseMarkdown(segment.text))
+			syncBlocks(segment.holder, segment.rendered, parseMarkdown(stripEmoji(segment.text)))
 		end
+	end
+end
+
+-- Toolbox search results (toolbox_results): a grid of up to 6 tiles, 2 columns in a narrow window, else 3. Tapping a
+-- tile shows its type, id and numbers on a line below the grid (the id can be selected).
+function Claude:addToolboxResults(message, tiles)
+	if #tiles == 0 then
+		return self:addNote(message, "No Toolbox results", DIMMER)
+	end
+	local frame = autoFrame(message.reply, #message.segments + 1)
+	table.insert(message.segments, { kind = "toolbox", frame = frame })
+	list(frame, 6)
+	local grid = autoFrame(frame, 1)
+	local layout = make("UIGridLayout", { SortOrder = Enum.SortOrder.LayoutOrder, CellPadding = UDim2.fromOffset(6, 6), CellSize = UDim2.new(1 / 3, -4, 0, 200) }, grid)
+	make("UIAspectRatioConstraint", { AspectRatio = 0.66, DominantAxis = Enum.DominantAxis.Width }, layout)
+	local columns = 0
+	local function fitColumns()
+		local wanted = if grid.AbsoluteSize.X > 0 and grid.AbsoluteSize.X < 380 then 2 else 3
+		if wanted == columns then
+			return
+		end
+		columns = wanted
+		layout.CellSize = UDim2.new(1 / wanted, -math.ceil(6 * (wanted - 1) / wanted), 0, 200)
+	end
+	fitColumns()
+	grid:GetPropertyChangedSignal("AbsoluteSize"):Connect(fitColumns)
+	-- A read-only box: the id can be selected and copied.
+	local detail = style(make("TextBox", { BackgroundTransparency = 1, ClearTextOnFocus = false, TextEditable = false, LayoutOrder = 2, Visible = false }, frame), "", SMALL, DIMMER, FONT)
+	detail.TextWrapped = true
+	detail.Size = UDim2.fromScale(1, 0)
+	detail.AutomaticSize = Enum.AutomaticSize.Y
+	for index = 1, math.min(6, #tiles) do
+		local tile = tiles[index]
+		if type(tile) ~= "table" or type(tile.id) ~= "number" then
+			continue
+		end
+		local cell = make("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = COLORS.row, BorderSizePixel = 0, ClipsDescendants = true, LayoutOrder = index }, grid)
+		corner(cell, 8)
+		pad(cell, 4, 4)
+		list(cell, 2)
+		local thumb = make("ImageLabel", { BackgroundColor3 = CODE_BG, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), Image = toolboxThumb(tile.id), ScaleType = Enum.ScaleType.Fit, LayoutOrder = 1 }, cell)
+		make("UIAspectRatioConstraint", { AspectRatio = 1, DominantAxis = Enum.DominantAxis.Width }, thumb)
+		corner(thumb, 6)
+		local function line(text: string, color: Color3, order: number, rich: boolean?)
+			local result = style(make("TextLabel", { BackgroundTransparency = 1, RichText = rich == true, LayoutOrder = order }, cell), text, 13, color, FONT)
+			result.TextWrapped = false
+			result.TextTruncate = Enum.TextTruncate.AtEnd
+			result.Size = UDim2.new(1, 0, 0, 15)
+			return result
+		end
+		line(stripEmoji(tostring(tile.name or "")), COLORS.text, 2)
+		local creator = make("Frame", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15), LayoutOrder = 3 }, cell)
+		make("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 3) }, creator)
+		if tile.verified then
+			verifiedMark(creator, 1)
+		end
+		local who = style(make("TextLabel", { BackgroundTransparency = 1, LayoutOrder = 2 }, creator), stripEmoji(tostring(tile.creator or "")), 13, if tile.verified then COLORS.dim else COLORS.warn, FONT)
+		who.TextWrapped = false
+		who.TextTruncate = Enum.TextTruncate.AtEnd
+		who.Size = UDim2.new(1, if tile.verified then -15 else 0, 1, 0)
+		line(toolboxFacts(tile), DIMMER, 4, true)
+		cell.Activated:Connect(function()
+			local parts = { `{tile.type or "Asset"} {tile.id}` }
+			if type(tile.triangles) == "number" then
+				table.insert(parts, `{compactNumber(tile.triangles)} tris`)
+			end
+			if type(tile.voteCount) == "number" then
+				table.insert(parts, `{compactNumber(tile.voteCount)} votes`)
+			end
+			if not tile.verified then
+				table.insert(parts, "unverified")
+			end
+			detail.Text = table.concat(parts, " · ")
+			detail.Visible = true
+		end)
 	end
 end
 
