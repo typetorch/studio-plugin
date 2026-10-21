@@ -29,10 +29,16 @@ local function playtestOpenKey(id: string): string
 end
 
 -- Each playtest's windows get ids of their own: Studio keeps a separate window layout for playtests and always brings
--- a window it has seen there back floating and small, while a new id starts docked on the right, as in Edit.
+-- a window it has seen there back floating and small (a manual dock there isn't kept either), while a new id starts
+-- docked. Playtest windows start docked on the left at the width the window last had (in a playtest, else in Edit).
 local playtestLayout: number? = nil
 
--- A dock widget, docked on the right. In a playtest it's open unless closed in an earlier playtest.
+local function widthKey(id: string): string
+	return `TypeTorch_width_{id}`
+end
+
+-- A dock widget: docked on the right in Edit, on the left in a playtest. In a playtest it's open unless closed in an
+-- earlier playtest.
 function Widgets.dock(plugin: Plugin, id: string, width: number, height: number, minWidth: number, minHeight: number)
 	local edit = game:GetService("RunService"):IsEdit()
 	if not edit and not playtestLayout then
@@ -40,11 +46,28 @@ function Widgets.dock(plugin: Plugin, id: string, width: number, height: number,
 		playtestLayout = (if type(last) == "number" then last else 0) + 1
 		plugin:SetSetting("TypeTorch_playtestLayout", playtestLayout)
 	end
+	local saved = plugin:GetSetting(widthKey(id))
+	if not edit and type(saved) == "number" then
+		width = math.clamp(math.floor(saved), minWidth, 1200)
+	end
 	local open = not edit and plugin:GetSetting(playtestOpenKey(id)) ~= false
-	return plugin:CreateDockWidgetPluginGuiAsync(
+	local widget = plugin:CreateDockWidgetPluginGuiAsync(
 		if edit then id else `{id}Playtest{playtestLayout}`,
-		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, open, not edit, width, height, minWidth, minHeight)
+		DockWidgetPluginGuiInfo.new(if edit then Enum.InitialDockState.Right else Enum.InitialDockState.Left, open, not edit, width, height, minWidth, minHeight)
 	)
+	-- Remembers the width a moment after a resize settles (not while dragging, nor the 0 of a closing window).
+	local pending = 0
+	widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		pending += 1
+		local mine = pending
+		task.delay(1, function()
+			local size = widget.AbsoluteSize.X
+			if mine == pending and widget.Enabled and size >= minWidth then
+				pcall(plugin.SetSetting, plugin, widthKey(id), size)
+			end
+		end)
+	end)
+	return widget
 end
 
 -- Studio restores a dock widget's open state in Edit, but a playtest's DataModel opens it closed, and a playtest's

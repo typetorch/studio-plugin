@@ -813,17 +813,30 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 	box.TextWrapped = true
 	box.TextYAlignment = Enum.TextYAlignment.Top
 	box.Size = UDim2.new(1, 0, 0, LINE + 4)
-	box.AutomaticSize = Enum.AutomaticSize.Y
 	self.box = box
+	-- The height is measured (AutomaticSize doesn't grow a TextBox inside a ScrollingFrame: it stays one line tall).
 	local function fitBox()
-		local lines = math.max(1, math.ceil((box.TextBounds.Y - 1) / LINE))
+		local width = box.AbsoluteSize.X
+		if width <= 0 then
+			return
+		end
+		local text = box.Text
+		if string.sub(text, -1) == "\n" then
+			text ..= " "
+		end
+		local height = TextService:GetTextSize(if text == "" then " " else text, TEXT_SIZE, FONT, Vector2.new(width, 100000)).Y
+		local lines = math.max(1, math.ceil((height - 1) / LINE))
+		box.Size = UDim2.new(1, 0, 0, lines * LINE + 4)
 		inputScroll.Size = UDim2.new(1, 0, 0, math.min(lines, MAX_LINES) * LINE + 4)
 		-- Typing at the end keeps the caret in view.
 		if box.CursorPosition == -1 or box.CursorPosition >= #box.Text then
 			inputScroll.CanvasPosition = Vector2.new(0, math.max(0, inputScroll.AbsoluteCanvasSize.Y - inputScroll.AbsoluteWindowSize.Y))
 		end
 	end
-	box:GetPropertyChangedSignal("TextBounds"):Connect(fitBox)
+	box:GetPropertyChangedSignal("Text"):Connect(fitBox)
+	box:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		task.defer(fitBox)
+	end)
 	-- Shift as the box sees it (a dock widget's keys don't always reach UserInputService).
 	local shiftHeld = false
 	local function trackShift(input: InputObject, down: boolean)
