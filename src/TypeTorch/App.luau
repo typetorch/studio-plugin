@@ -689,7 +689,8 @@ local function playtestLoop()
 			end
 			report()
 		end
-		task.wait(HEARTBEAT_SECONDS)
+		-- Until attached, look again soon: the server's copy may not have opened the bridge yet.
+		task.wait(if state.server then HEARTBEAT_SECONDS else 1)
 	end
 end
 
@@ -747,7 +748,7 @@ function App.start(plugin: Plugin)
 	startAgent()
 end
 
--- The TypeTorch panel and the Claude window (the same widget ids in every DataModel, so Studio keeps their layout).
+-- The TypeTorch panel and the Claude window.
 createUi = function(plugin: Plugin)
 	panel = Panel.new(plugin, {
 		reconnect = App.reconnect,

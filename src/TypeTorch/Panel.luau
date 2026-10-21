@@ -49,10 +49,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	local button = toolbar:CreateButton("TypeTorchSync", "TypeTorch sync status", Icons.idle, "TypeTorch")
 	button.ClickableWhenViewportHidden = true
 	self.button = button
-	local widget = plugin:CreateDockWidgetPluginGuiAsync(
-		"TypeTorchSync",
-		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 320, 420, 260, 240)
-	)
+	local widget = Widgets.dock(plugin, "TypeTorchSync", 320, 420, 260, 240)
 	widget.Title = "TypeTorch"
 	widget.Name = "TypeTorchSync"
 	self.widget = widget

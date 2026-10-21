@@ -470,10 +470,7 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 
 	local button = toolbar:CreateButton("TypeTorchClaude", "Prompt Claude Code on the typetorch serve machine", "", "Claude")
 	button.ClickableWhenViewportHidden = true
-	local widget = plugin:CreateDockWidgetPluginGuiAsync(
-		"TypeTorchClaude",
-		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 360, 520, 280, 300)
-	)
+	local widget = Widgets.dock(plugin, "TypeTorchClaude", 360, 520, 280, 300)
 	widget.Title = "TypeTorch Claude"
 	widget.Name = "TypeTorchClaude"
 	self.widget = widget
@@ -729,11 +726,12 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 		end
 	end)
 
-	-- Loop: the running message about twice a second, the status every 10 s while the window is open.
+	-- Loop: the running message about twice a second, the status every 10 s while the window is open (and as soon as it
+	-- attaches to a serve or loses it).
 	task.spawn(function()
 		while true do
 			local ok, err = pcall(function()
-				if widget.Enabled and os.clock() - self.lastStatus >= STATUS_REFRESH then
+				if widget.Enabled and (os.clock() - self.lastStatus >= STATUS_REFRESH or self.endpoint() ~= self.statusEndpoint) then
 					self:refreshStatus()
 				end
 				self:restore()
@@ -764,6 +762,7 @@ end
 
 function Claude:refreshStatus()
 	self.lastStatus = os.clock()
+	self.statusEndpoint = self.endpoint()
 	local status = self.status
 	if self.endpoint() == nil then
 		status.Text = "Not connected · waiting for typetorch serve"

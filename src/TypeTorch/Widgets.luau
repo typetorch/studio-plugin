@@ -24,6 +24,29 @@ Widgets.BUTTON_HEIGHT = 34
 
 local COLORS = Widgets.COLORS
 
+local function playtestOpenKey(id: string): string
+	return `TypeTorch_playtestOpen_{id}`
+end
+
+-- Each playtest's windows get ids of their own: Studio keeps a separate window layout for playtests and always brings
+-- a window it has seen there back floating and small, while a new id starts docked on the right, as in Edit.
+local playtestLayout: number? = nil
+
+-- A dock widget, docked on the right. In a playtest it's open unless closed in an earlier playtest.
+function Widgets.dock(plugin: Plugin, id: string, width: number, height: number, minWidth: number, minHeight: number)
+	local edit = game:GetService("RunService"):IsEdit()
+	if not edit and not playtestLayout then
+		local last = plugin:GetSetting("TypeTorch_playtestLayout")
+		playtestLayout = (if type(last) == "number" then last else 0) + 1
+		plugin:SetSetting("TypeTorch_playtestLayout", playtestLayout)
+	end
+	local open = not edit and plugin:GetSetting(playtestOpenKey(id)) ~= false
+	return plugin:CreateDockWidgetPluginGuiAsync(
+		if edit then id else `{id}Playtest{playtestLayout}`,
+		DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, open, not edit, width, height, minWidth, minHeight)
+	)
+end
+
 -- Studio restores a dock widget's open state in Edit, but a playtest's DataModel opens it closed, and a playtest's
 -- copy of the plugin can't read what Edit saves meanwhile (plugin settings reach it only from earlier playtests). So
 -- playtests keep their own: open unless closed in an earlier playtest. A close is saved a moment later, so the
@@ -32,10 +55,7 @@ function Widgets.keepOpen(plugin: Plugin, widget: DockWidgetPluginGui)
 	if game:GetService("RunService"):IsEdit() then
 		return
 	end
-	local key = `TypeTorch_playtestOpen_{widget.Name}`
-	if plugin:GetSetting(key) ~= false then
-		widget.Enabled = true
-	end
+	local key = playtestOpenKey(widget.Name)
 	widget:GetPropertyChangedSignal("Enabled"):Connect(function()
 		local enabled = widget.Enabled
 		task.delay(if enabled then 0 else 1, function()
