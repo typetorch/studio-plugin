@@ -561,6 +561,13 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 			self.lastStatus = -math.huge
 		end
 	end)
+	-- Testing reconnects: setting the widget's ClaudeDropStream attribute closes the stream as a dropped one would.
+	widget:GetAttributeChangedSignal("ClaudeDropStream"):Connect(function()
+		local stream = self.stream
+		if stream then
+			pcall(stream.client.Close, stream.client)
+		end
+	end)
 	Widgets.keepOpen(plugin, widget)
 	button:SetActive(widget.Enabled)
 
@@ -999,6 +1006,20 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 		end
 	end)
 
+	-- The stream has a loop of its own: a reconnect doesn't wait for the HTTP rounds below.
+	task.spawn(function()
+		while true do
+			local ok, err = pcall(function()
+				self:keepStream()
+				self:watchActive()
+			end)
+			if not ok then
+				self:notify(`Failed: {err}`, COLORS.bad)
+			end
+			task.wait(POLL_ACTIVE)
+		end
+	end)
+
 	-- Loop: the running message about twice a second, the status every 10 s while the window is open (and as soon as it
 	-- attaches to a serve or loses it).
 	task.spawn(function()
@@ -1007,8 +1028,6 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 				if widget.Enabled and (os.clock() - self.lastStatus >= STATUS_REFRESH or self.endpoint() ~= self.statusEndpoint) then
 					self:refreshStatus()
 				end
-				self:keepStream()
-				self:watchActive()
 				self:restore()
 				if not self:streaming() or os.clock() - self.lastPush >= STREAM_QUIET then
 					self.lastPush = os.clock()
@@ -1626,11 +1645,14 @@ function Claude:keepStream()
 	end
 	stream = { client = client, endpoint = endpoint, ready = false, closed = false, watching = nil, refused = {}, connections = {} }
 	self.stream = stream
+	-- The stream's state on the widget (attributes ClaudeStream, ClaudePushes), for checking it from Studio.
+	self.widget:SetAttribute("ClaudeStream", "opening")
 	local function lost()
 		if stream.closed then
 			return
 		end
 		stream.closed = true
+		self.widget:SetAttribute("ClaudeStream", "closed")
 		if not stream.ready then
 			self:streamFailed()
 		end
@@ -1695,6 +1717,7 @@ function Claude:onStream(stream, text: string)
 	local message = self.active
 	if data.type == "ready" then
 		stream.ready = true
+		self.widget:SetAttribute("ClaudeStream", "ready")
 		self.streamFailures = 0
 		self:watchActive()
 	elseif data.type == "prompt" then
@@ -1702,6 +1725,7 @@ function Claude:onStream(stream, text: string)
 			return
 		end
 		self.lastPush = os.clock()
+		self.widget:SetAttribute("ClaudePushes", (self.widget:GetAttribute("ClaudePushes") or 0) + 1)
 		if type(data.since) == "number" and data.since > message.cursor then
 			-- Events between the cursor and this push never arrived: HTTP fetches them on the next round.
 			self.lastPush = -math.huge
