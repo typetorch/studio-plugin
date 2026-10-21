@@ -93,11 +93,15 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	local remoteCard = Widgets.card(scroll)
 	Widgets.line(remoteCard, "Remote server", 15, COLORS.text, Enum.Font.BuilderSansBold)
 	self.remoteLine = Widgets.line(remoteCard, "", 14, COLORS.dim)
-	self.remoteUrl = Widgets.textBox(remoteCard, "server URL, e.g. https://serve.example.com")
-	self.remoteCode = Widgets.textBox(remoteCard, "pairing code from the owner")
+	self.remoteLink = Widgets.textBox(remoteCard, "pairing link, e.g. https://serve.example.com#code")
+	self.remoteLink.FocusLost:Connect(function(enterPressed)
+		if enterPressed then
+			actions.pairRemote(self.remoteLink.Text)
+		end
+	end)
 	local remoteButtons = Widgets.buttonRow(remoteCard)
 	self.pairButton = Widgets.button(remoteButtons, "Pair", function()
-		actions.pairRemote(self.remoteUrl.Text, self.remoteCode.Text)
+		actions.pairRemote(self.remoteLink.Text)
 	end)
 	self.localButton = Widgets.button(remoteButtons, "Use local serve", function()
 		actions.forgetRemote()
@@ -212,9 +216,8 @@ function Panel:render(state)
 	local remote = Control.remote
 	self.remoteLine.Text = if remote
 		then `Using {remote.url}`
-		else "Working with someone else's typetorch serve? Enter their URL and the code from `typetorch serve pair`."
-	self.remoteUrl.Visible = remote == nil
-	self.remoteCode.Visible = remote == nil
+		else "Paste the link from `typetorch serve pair --url`"
+	self.remoteLink.Visible = remote == nil
 	self.pairButton.Visible = remote == nil
 	self.localButton.Visible = remote ~= nil
 	self.remoteMessage.Text = state.remoteMessage or ""

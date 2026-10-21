@@ -40,6 +40,8 @@ local LIVE_RELOAD_DELAY = 1
 local LIVE_SETTING = "TypeTorch_livePlaytest"
 -- { url, token } of a paired remote serve (`typetorch serve --remote` behind a tunnel); nil: local serve.
 local REMOTE_SETTING = "TypeTorch_remote"
+-- Must match REMOTE_DEFAULT_PORT in cli src/serve/remote.ts.
+local LOCAL_GATEWAY_PORT = 34890
 
 type Server = { port: Control.Endpoint, hello: Control.Hello }
 
@@ -439,15 +441,23 @@ local function deviceName(): string
 end
 
 -- Pairs with a remote serve: `url` is the owner's tunnel, `code` from `typetorch serve pair`.
-function App.pairRemote(url: string, code: string)
+-- `link`: the pairing link `<url>#<code>` that `typetorch serve pair --url` prints (split on the last '#'), or a bare
+-- code for a serve --remote on this machine (its gateway's default port).
+function App.pairRemote(link: string)
+	link = Control.trimUrl(link)
+	local url, code = string.match(link, "^(.*)#([^#]*)$")
+	if url == nil then
+		url, code = `http://localhost:{LOCAL_GATEWAY_PORT}`, link
+	end
 	url = Control.trimUrl(url)
+	code = Control.trimUrl(code)
 	if not string.match(url, "^https?://[%w%.%-]+") then
-		state.remoteMessage = "Enter the server's URL, e.g. https://serve.example.com"
+		state.remoteMessage = "Paste the whole link, e.g. https://serve.example.com#code"
 		render()
 		return
 	end
 	if code == "" then
-		state.remoteMessage = "Enter the pairing code from `typetorch serve pair`"
+		state.remoteMessage = "The link has no code after '#': run `typetorch serve pair --url` again"
 		render()
 		return
 	end
