@@ -5,7 +5,6 @@
 -- Studio has no screenshots, images, Toolbox grid or Live mode, so those are left out. Requests go through serve's
 -- control API (`/tt/claude/...`), locally or through a paired remote serve.
 
-local HttpService = game:GetService("HttpService")
 local TextService = game:GetService("TextService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -443,9 +442,9 @@ local function toolLine(event): string
 	return if tool ~= "" then tool else (event.text or "")
 end
 
--- The chat (its id and prompt ids) is kept on serve (`/tt/claude/chat`), so every DataModel shows the same one: the
--- Play copy picks it up, and Edit after Stop. Plugin settings can't: a playtest's copy doesn't see Edit's.
-local KEEP_MESSAGES = 20
+-- The chat (its conversation and prompt ids) is kept on serve (`/tt/claude/chat`), so every DataModel shows the same
+-- one: the Play copy picks it up, and Edit after Stop. Plugin settings can't: a playtest's copy doesn't see Edit's.
+local KEEP_MESSAGES = 100
 local CATCH_UP_PAGES = 50
 local CHAT_CHECK = 2
 
@@ -455,7 +454,8 @@ local CHAT_CHECK = 2
 function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Control.Endpoint?)
 	local self = setmetatable({}, Claude)
 	self.endpoint = endpoint
-	self.rev = nil :: string?
+	self.chatKey = "" -- conversation and prompt ids of the chat shown, to spot another copy's change
+	self.promptTexts = {} :: { [string]: string } -- prompts this copy sent, if serve lacks their text
 	self.lastChatCheck = -math.huge
 	self.saving = 0
 	self.conversationId = nil :: string?
@@ -1205,17 +1205,22 @@ function Claude:fetch(message, pages: number)
 end
 
 -- Sends the chat (its id and the last prompts) to serve.
+local function chatKey(conversationId: string?, ids: { string }): string
+	return `{conversationId or ""}|{table.concat(ids, ",")}`
+end
+
 function Claude:save()
-	local prompts = {}
+	local ids = {}
 	for index = math.max(1, #self.messages - KEEP_MESSAGES + 1), #self.messages do
 		local message = self.messages[index]
-		table.insert(prompts, { id = message.id, prompt = message.prompt })
+		self.promptTexts[message.id] = message.prompt
+		table.insert(ids, message.id)
 	end
-	self.rev = HttpService:GenerateGUID(false)
-	local chat = { rev = self.rev, conversationId = self.conversationId, prompts = prompts }
+	self.chatKey = chatKey(self.conversationId, ids)
+	local body = { user = userId(), conversationId = self.conversationId, prompts = ids }
 	self.saving += 1
 	task.spawn(function()
-		self:request("POST", "/tt/claude/chat", { user = userId(), chat = chat })
+		self:request("POST", "/tt/claude/chat", body)
 		self.saving -= 1
 	end)
 end
@@ -1226,17 +1231,21 @@ function Claude:restore()
 		return
 	end
 	self.lastChatCheck = os.clock()
-	local ok, reply = self:request("GET", `/tt/claude/chat?user={userId()}`)
-	local saved = ok and type(reply) == "table" and reply.chat
-	if type(saved) ~= "table" or saved.rev == self.rev or self.sending or self.saving > 0 then
+	local ok, saved = self:request("GET", `/tt/claude/chat?user={userId()}`)
+	if not ok or type(saved) ~= "table" or type(saved.prompts) ~= "table" or self.sending or self.saving > 0 then
+		return
+	end
+	local key = chatKey(saved.conversationId, saved.prompts)
+	if key == self.chatKey then
 		return
 	end
 	self:clearTranscript()
-	self.rev = saved.rev
+	self.chatKey = key
 	self.conversationId = saved.conversationId
+	local texts = if type(saved.texts) == "table" then saved.texts else {}
 	local myView = self.view
-	for _, entry in (if type(saved.prompts) == "table" then saved.prompts else {}) do
-		local message = self:buildMessage(entry.id, entry.prompt)
+	for _, id in saved.prompts do
+		local message = self:buildMessage(id, texts[id] or self.promptTexts[id] or "Earlier prompt")
 		table.insert(self.messages, message)
 		self.failures = 0
 		self:fetch(message, CATCH_UP_PAGES)
