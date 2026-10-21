@@ -1,8 +1,26 @@
 # TypeTorch Studio plugin
 
-Attaches Roblox Studio to `typetorch serve` by itself and keeps it synced: no Connect button, no reconnecting by hand.
-Install it with `typetorch studio install-plugin` (builds this folder with Rojo into Studio's plugins folder as
-`TypeTorchSync.rbxm`), then restart Studio. The CLI's README ("Studio: typetorch serve") describes the whole loop.
+Attaches Roblox Studio to [`typetorch serve`](https://github.com/typetorch/cli) by itself and keeps it synced: no
+Connect button, no reconnecting by hand. It also lets an agent drive Studio (reconnect, play, stop, Output), pushes code
+into a running playtest (kernel 0.5.4+), and marks and syncs hot assets from a panel.
+
+## Install
+
+In a TypeTorch game repo:
+
+```sh
+bun add -d @typetorch/studio-plugin
+bunx typetorch studio install-plugin
+```
+
+`install-plugin` builds this package with Rojo into Studio's plugins folder as `TypeTorchSync.rbxm`; restart Studio
+(or reload plugins). From a checkout of this repo instead: `rojo build default.project.json --plugin TypeTorchSync.rbxm`
+(or `typetorch studio install-plugin --from <this folder>`). Then run `typetorch serve` in the game folder: the plugin
+finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
+
+## Layout
+
+The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two must change together.
 
 - `src/Main.server.luau`: the plugin script.
 - `src/TypeTorch/App.luau`: finds the server (`GET /tt/hello` on 34880-34887), picks the one whose universeId matches
@@ -32,3 +50,7 @@ Changed files (MPL-2.0 still applies to them, and each says what changed at its 
 
 To update Rojo: copy the same files from the new tag, re-apply the change above, and keep `Version.txt` in step with
 the `rojo` that `rokit.toml` pins.
+
+## License
+
+MIT (`LICENSE`), except `vendor/rojo/` (MPL-2.0, see above).

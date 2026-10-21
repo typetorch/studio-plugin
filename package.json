@@ -1,0 +1,19 @@
+{
+	"name": "@typetorch/studio-plugin",
+	"version": "0.4.0",
+	"description": "TypeTorch Studio plugin: attaches Roblox Studio to `typetorch serve` by itself (sync, agent commands, live playtest, hot assets).",
+	"license": "MIT AND MPL-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/typetorch/studio-plugin.git"
+	},
+	"homepage": "https://github.com/typetorch/studio-plugin#readme",
+	"publishConfig": {
+		"access": "public"
+	},
+	"files": ["default.project.json", "src", "vendor", "rokit.toml", "README.md", "LICENSE"],
+	"scripts": {
+		"build": "rojo build default.project.json -o TypeTorchSync.rbxm",
+		"install-plugin": "rojo build default.project.json --plugin TypeTorchSync.rbxm"
+	}
+}
