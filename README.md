@@ -19,6 +19,13 @@ bunx typetorch studio install-plugin
 (or `typetorch studio install-plugin --from <this folder>`). Then run `typetorch serve` in the game folder: the plugin
 finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
 
+## Working with someone else's serve
+
+The owner runs `typetorch serve --remote` and points a tunnel at it (Cloudflare Tunnel: `service:
+http://localhost:34890`), then `typetorch serve pair` for a one-time code. In the panel's **Remote server** card, enter
+the tunnel URL and the code and press **Pair**; Studio then syncs from that serve (code read-only) and the Hot assets
+buttons run there. **Use local serve** goes back. See the CLI's README ("A Studio on another machine").
+
 ## Layout
 
 The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two must change together.
@@ -37,7 +44,8 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
   synced, red disconnected): `rbxassetid://<id>` of each image, once the TypeTorch icon set is picked and uploaded.
   An empty id keeps Studio's default icon.
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
-- `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract).
+- `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract): a local port, or
+  a paired remote serve (its URL plus a device token; Rojo at `<url>/r/<token>`).
 - `vendor/rojo/`: Rojo's plugin core, unchanged except where marked.
 
 ## Rojo (vendored, MPL-2.0)

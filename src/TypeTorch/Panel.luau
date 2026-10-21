@@ -2,6 +2,7 @@
 -- The plugin's dock widget: sync status, the matched server, the last compile result and the buttons. Same look as
 -- the TypeTorch dev menu (Widgets.luau).
 
+local Control = require(script.Parent.Control)
 local Icons = require(script.Parent.Icons)
 local Widgets = require(script.Parent.Widgets)
 local COLORS = Widgets.COLORS
@@ -85,6 +86,21 @@ function Panel.new(plugin: Plugin, actions, version: string)
 		actions.confirm()
 	end, COLORS.accent)
 	self.confirmButton.TextColor3 = COLORS.dark
+
+	-- Remote card: a typetorch serve on another machine (`serve --remote` behind the owner's tunnel)
+	local remoteCard = Widgets.card(scroll)
+	Widgets.line(remoteCard, "Remote server", 15, COLORS.text, Enum.Font.BuilderSansBold)
+	self.remoteLine = Widgets.line(remoteCard, "", 14, COLORS.dim)
+	self.remoteUrl = Widgets.textBox(remoteCard, "server URL, e.g. https://serve.example.com")
+	self.remoteCode = Widgets.textBox(remoteCard, "pairing code from the owner")
+	local remoteButtons = Widgets.buttonRow(remoteCard)
+	self.pairButton = Widgets.button(remoteButtons, "Pair", function()
+		actions.pairRemote(self.remoteUrl.Text, self.remoteCode.Text)
+	end)
+	self.localButton = Widgets.button(remoteButtons, "Use local serve", function()
+		actions.forgetRemote()
+	end)
+	self.remoteMessage = Widgets.line(remoteCard, "", 14, COLORS.dim)
 
 	-- Playtest card
 	local playCard = Widgets.card(scroll)
@@ -171,7 +187,9 @@ function Panel:render(state)
 	self.detail.Text = state.detail
 	self.detail.Visible = state.detail ~= ""
 	local server = state.server
-	if server then
+	if server and type(server.port) == "table" then
+		self.project.Text = `{server.hello.project} at {server.port.url}`
+	elseif server then
 		self.project.Text = `{server.hello.project}: Rojo {server.hello.rojoPort}, control {server.port}`
 	else
 		self.project.Text = "No server attached"
@@ -184,6 +202,17 @@ function Panel:render(state)
 	self.liveButton.Text = if self.livePlaytest then "Live playtest: on" else "Live playtest: off"
 
 	self:renderAssets(state)
+
+	local remote = Control.remote
+	self.remoteLine.Text = if remote
+		then `Using {remote.url}`
+		else "Working with someone else's typetorch serve? Enter their URL and the code from `typetorch serve pair`."
+	self.remoteUrl.Visible = remote == nil
+	self.remoteCode.Visible = remote == nil
+	self.pairButton.Visible = remote == nil
+	self.localButton.Visible = remote ~= nil
+	self.remoteMessage.Text = state.remoteMessage or ""
+	self.remoteMessage.Visible = self.remoteMessage.Text ~= ""
 
 	local status = state.status
 	if status and status.compile then

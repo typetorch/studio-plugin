@@ -37,8 +37,10 @@ local AGENT_RECONNECT_WAIT = 10
 -- After the playtest sync connects, wait this long before turning LiveReload on: Rojo's first sync isn't a change.
 local LIVE_RELOAD_DELAY = 1
 local LIVE_SETTING = "TypeTorch_livePlaytest"
+-- { url, token } of a paired remote serve (`typetorch serve --remote` behind a tunnel); nil: local serve.
+local REMOTE_SETTING = "TypeTorch_remote"
 
-type Server = { port: number, hello: Control.Hello }
+type Server = { port: Control.Endpoint, hello: Control.Hello }
 
 local state = {
 	id = HttpService:GenerateGUID(false),
@@ -61,6 +63,7 @@ local state = {
 	-- The Hot assets card: what the place marks (scanned here), what the lockfile knows (GET /tt/assets), the last job.
 	assets = { marked = {}, scanned = false, lock = nil, changes = nil, message = "", job = nil, jobText = "" },
 	wake = nil :: thread?,
+	remoteMessage = "",
 }
 
 local panel
@@ -184,9 +187,14 @@ end
 -- Starts Rojo's sync against `server`. Returns when the session is connected or failed.
 local function connect(server: Server)
 	state.server = server
-	setPhase("connecting", `{server.hello.project} on port {server.hello.rojoPort}`)
+	setPhase(
+		"connecting",
+		if type(server.port) == "table"
+			then `{server.hello.project} at {server.port.url}`
+			else `{server.hello.project} on port {server.hello.rojoPort}`
+	)
 	Control.request(server.port, "POST", "/tt/plugin/hello", App.helloBody())
-	local api = ApiContext.new(`http://{Control.HOST}:{server.hello.rojoPort}`)
+	local api = ApiContext.new(Control.rojoUrl(server.port, server.hello))
 	local session = ServeSession.new({ apiContext = api, twoWaySync = false })
 	state.session = session
 	local settled = false
@@ -256,7 +264,9 @@ local function loop()
 				waitOrWake(PROBE_SECONDS)
 			elseif not server then
 				state.server = nil
-				if #found == 0 then
+				if Control.remote then
+					setPhase("waiting", `Can't reach {Control.remote.url}: {Control.lastRemoteError or "no answer"}`)
+				elseif #found == 0 then
 					setPhase("waiting", "Run `typetorch serve` in the game folder")
 				else
 					setPhase("waiting", `{#found} servers run, none for this experience ({game.GameId})`)
@@ -409,6 +419,59 @@ function App.runJob(kind: string, quiet: boolean?)
 end
 
 -- Drops the connection and starts over (a full resync).
+local function loadRemote()
+	local saved = state.plugin and state.plugin:GetSetting(REMOTE_SETTING)
+	if type(saved) == "table" and type(saved.url) == "string" and type(saved.token) == "string" then
+		Control.remote = { url = saved.url, token = saved.token }
+	else
+		Control.remote = nil
+	end
+end
+
+-- Who this Studio is, for the owner's `typetorch serve devices`.
+local function deviceName(): string
+	local ok, name = pcall(function()
+		local userId = game:GetService("StudioService"):GetUserId()
+		return game:GetService("Players"):GetNameFromUserIdAsync(userId)
+	end)
+	return if ok and type(name) == "string" then name else "Studio"
+end
+
+-- Pairs with a remote serve: `url` is the owner's tunnel, `code` from `typetorch serve pair`.
+function App.pairRemote(url: string, code: string)
+	url = Control.trimUrl(url)
+	if not string.match(url, "^https?://[%w%.%-]+") then
+		state.remoteMessage = "Enter the server's URL, e.g. https://serve.example.com"
+		render()
+		return
+	end
+	if code == "" then
+		state.remoteMessage = "Enter the pairing code from `typetorch serve pair`"
+		render()
+		return
+	end
+	state.remoteMessage = "Pairing"
+	render()
+	local ok, token = Control.pair(url, code, deviceName())
+	if not ok then
+		state.remoteMessage = `Couldn't pair: {token}`
+		render()
+		return
+	end
+	state.plugin:SetSetting(REMOTE_SETTING, { url = url, token = token })
+	state.remoteMessage = `Paired with {url}`
+	loadRemote()
+	App.reconnect()
+end
+
+-- Back to the local serve (the pairing stays valid on the owner's side until they unpair it).
+function App.forgetRemote()
+	state.plugin:SetSetting(REMOTE_SETTING, nil)
+	state.remoteMessage = "Using the local typetorch serve"
+	loadRemote()
+	App.reconnect()
+end
+
 function App.reconnect()
 	stopSession()
 	state.backoff = 1
@@ -616,6 +679,7 @@ function App.start(plugin: Plugin)
 		stopSession()
 		wake()
 	end)
+	loadRemote()
 	if not RunService:IsEdit() then
 		state.mode = if RunService:IsServer() then "server" else "client"
 		state.phase = "idle"
@@ -637,6 +701,8 @@ function App.start(plugin: Plugin)
 		removeSelection = App.removeSelection,
 		runJob = App.runJob,
 		suggestKey = Assets.suggestKey,
+		pairRemote = App.pairRemote,
+		forgetRemote = App.forgetRemote,
 	}, VERSION)
 	render()
 	task.spawn(loop)
