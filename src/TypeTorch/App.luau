@@ -20,12 +20,13 @@ local Log = require(Rojo.Packages.Log)
 
 local Agent = require(script.Parent.Agent)
 local Assets = require(script.Parent.Assets)
+local Claude = require(script.Parent.Claude)
 local Control = require(script.Parent.Control)
 local Panel = require(script.Parent.Panel)
 
 local App = {}
 
-local VERSION = "0.5.0"
+local VERSION = "0.6.0"
 local PROBE_SECONDS = 2
 local HEARTBEAT_SECONDS = 5
 local STATUS_SECONDS = 3
@@ -39,6 +40,10 @@ local LIVE_RELOAD_DELAY = 1
 local LIVE_SETTING = "TypeTorch_livePlaytest"
 -- { url, token } of a paired remote serve (`typetorch serve --remote` behind a tunnel); nil: local serve.
 local REMOTE_SETTING = "TypeTorch_remote"
+-- Must match REMOTE_DEFAULT_PORT in cli src/serve/remote.ts.
+local LOCAL_GATEWAY_PORT = 34890
+-- The key the Play client's requests carry through the server's bridge (Control.serveBridge); Edit makes it.
+local BRIDGE_SETTING = "TypeTorch_bridgeKey"
 
 type Server = { port: Control.Endpoint, hello: Control.Hello }
 
@@ -67,6 +72,7 @@ local state = {
 }
 
 local panel
+local createUi: (Plugin) -> ()
 
 local function settingKey(): string
 	return `TypeTorch_autoConnect_{if game.PlaceId ~= 0 then tostring(game.PlaceId) else "local"}`
@@ -118,7 +124,8 @@ end
 -- Tells serve what this plugin is doing (also its heartbeat). Failures are fine: serve may be gone.
 local function report()
 	local server = state.server
-	if not server then
+	-- The Play client's copy only shows status: the server's copy reports for the playtest.
+	if not server or state.mode == "client" then
 		return
 	end
 	local status = if state.phase == "connected"
@@ -318,7 +325,7 @@ local function statusLoop()
 				local ok, status = Control.request(state.server.port, "GET", "/tt/status")
 				state.status = if ok then status else nil
 			end
-			if ticks % ASSET_SCAN_EVERY == 0 then
+			if state.mode == "edit" and ticks % ASSET_SCAN_EVERY == 0 then
 				refreshAssets()
 			end
 			ticks += 1
@@ -438,21 +445,32 @@ local function deviceName(): string
 end
 
 -- Pairs with a remote serve: `url` is the owner's tunnel, `code` from `typetorch serve pair`.
-function App.pairRemote(url: string, code: string)
+-- `link`: the pairing link `<url>#<code>` that `typetorch serve pair --url` prints (split on the last '#'), or a bare
+-- code for a serve --remote on this machine (its gateway's default port).
+function App.pairRemote(link: string)
+	link = Control.trimUrl(link)
+	local url, code = string.match(link, "^(.*)#([^#]*)$")
+	if url == nil then
+		url, code = `http://localhost:{LOCAL_GATEWAY_PORT}`, link
+	end
 	url = Control.trimUrl(url)
+	code = Control.trimUrl(code)
 	if not string.match(url, "^https?://[%w%.%-]+") then
-		state.remoteMessage = "Enter the server's URL, e.g. https://serve.example.com"
+		state.remoteMessage = "Paste the whole link, e.g. https://serve.example.com#code"
 		render()
 		return
 	end
 	if code == "" then
-		state.remoteMessage = "Enter the pairing code from `typetorch serve pair`"
+		state.remoteMessage = "The link has no code after '#': run `typetorch serve pair --url` again"
 		render()
 		return
 	end
 	state.remoteMessage = "Pairing"
 	render()
-	local ok, token = Control.pair(url, code, deviceName())
+	local okId, userId = pcall(function()
+		return game:GetService("StudioService"):GetUserId()
+	end)
+	local ok, token = Control.pair(url, code, deviceName(), if okId then userId else nil)
 	if not ok then
 		state.remoteMessage = `Couldn't pair: {token}`
 		render()
@@ -647,7 +665,10 @@ local function playtestLoop()
 		if server and (not state.server or state.server.hello.pid ~= server.hello.pid) then
 			stopSession() -- serve restarted: start over
 			state.server = server
-			Control.request(server.port, "POST", "/tt/plugin/hello", App.helloBody())
+			-- The client only shows status and the Claude window: the server's copy is the playtest's plugin.
+			if state.mode ~= "client" then
+				Control.request(server.port, "POST", "/tt/plugin/hello", App.helloBody())
+			end
 		elseif not server then
 			stopSession()
 			state.server = nil
@@ -668,8 +689,18 @@ local function playtestLoop()
 			end
 			report()
 		end
-		task.wait(HEARTBEAT_SECONDS)
+		-- Until attached, look again soon: the server's copy may not have opened the bridge yet.
+		task.wait(if state.server then HEARTBEAT_SECONDS else 1)
 	end
+end
+
+local function bridgeKey(plugin: Plugin): string
+	local key = plugin:GetSetting(BRIDGE_SETTING)
+	if type(key) ~= "string" then
+		key = HttpService:GenerateGUID(false)
+		plugin:SetSetting(BRIDGE_SETTING, key)
+	end
+	return key
 end
 
 function App.start(plugin: Plugin)
@@ -680,18 +711,45 @@ function App.start(plugin: Plugin)
 		wake()
 	end)
 	loadRemote()
-	if not RunService:IsEdit() then
-		state.mode = if RunService:IsServer() then "server" else "client"
-		state.phase = "idle"
-		task.spawn(playtestLoop)
-		startAgent()
-		return
-	end
 	local saved = plugin:GetSetting(settingKey())
 	state.autoConnect = if saved == nil then true else saved == true
 	Log.setLogLevelThunk(function()
 		return Log.Level.Warning
 	end)
+	if not RunService:IsEdit() then
+		state.mode = if RunService:IsServer() then "server" else "client"
+		state.phase = "idle"
+		if state.mode == "client" then
+			Control.viaBridge = true
+			Control.bridgeKey = function()
+				return plugin:GetSetting(BRIDGE_SETTING)
+			end
+		elseif not RunService:IsRunMode() then
+			Control.serveBridge(bridgeKey(plugin))
+		end
+		-- Studio shows the toolbar and windows of the DataModel in view: the client in Play, the server in Run. Without
+		-- them there, the TypeTorch and Claude buttons and windows vanish until Stop.
+		if RunService:IsClient() or RunService:IsRunMode() then
+			createUi(plugin)
+			render()
+			task.spawn(statusLoop)
+		end
+		task.spawn(playtestLoop)
+		if state.mode ~= "client" then
+			startAgent()
+		end
+		return
+	end
+	bridgeKey(plugin)
+	createUi(plugin)
+	render()
+	task.spawn(loop)
+	task.spawn(statusLoop)
+	startAgent()
+end
+
+-- The TypeTorch panel and the Claude window.
+createUi = function(plugin: Plugin)
 	panel = Panel.new(plugin, {
 		reconnect = App.reconnect,
 		setAutoConnect = App.setAutoConnect,
@@ -704,10 +762,9 @@ function App.start(plugin: Plugin)
 		pairRemote = App.pairRemote,
 		forgetRemote = App.forgetRemote,
 	}, VERSION)
-	render()
-	task.spawn(loop)
-	task.spawn(statusLoop)
-	startAgent()
+	Claude.new(plugin, panel.toolbar, function()
+		return if state.server then state.server.port else nil
+	end)
 end
 
 return App

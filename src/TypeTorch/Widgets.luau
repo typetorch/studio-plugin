@@ -24,6 +24,76 @@ Widgets.BUTTON_HEIGHT = 34
 
 local COLORS = Widgets.COLORS
 
+-- A window that starts closed in playtests keeps its state under its own key (so an "open" saved before the default
+-- changed doesn't count).
+local function playtestOpenKey(id: string, closedByDefault: boolean?): string
+	return if closedByDefault then `TypeTorch_playtestShown_{id}` else `TypeTorch_playtestOpen_{id}`
+end
+
+-- Each playtest's windows get ids of their own: Studio keeps a separate window layout for playtests and always brings
+-- a window it has seen there back floating and small (a manual dock there isn't kept either), while a new id starts
+-- docked. Playtest windows start docked on the left at the width the window last had (in a playtest, else in Edit).
+local playtestLayout: number? = nil
+
+local function widthKey(id: string): string
+	return `TypeTorch_width_{id}`
+end
+
+-- A dock widget: docked on the right in Edit, on the left in a playtest. In a playtest it's open unless closed in an
+-- earlier playtest; with `closedInPlaytest` it's closed unless opened in an earlier playtest (the left column is short,
+-- so the Claude window gets it).
+function Widgets.dock(plugin: Plugin, id: string, width: number, height: number, minWidth: number, minHeight: number, closedInPlaytest: boolean?)
+	local edit = game:GetService("RunService"):IsEdit()
+	if not edit and not playtestLayout then
+		local last = plugin:GetSetting("TypeTorch_playtestLayout")
+		playtestLayout = (if type(last) == "number" then last else 0) + 1
+		plugin:SetSetting("TypeTorch_playtestLayout", playtestLayout)
+	end
+	local saved = plugin:GetSetting(widthKey(id))
+	if not edit and type(saved) == "number" then
+		width = math.clamp(math.floor(saved), minWidth, 1200)
+	end
+	local openKey = playtestOpenKey(id, closedInPlaytest)
+	local open = not edit and if closedInPlaytest then plugin:GetSetting(openKey) == true else plugin:GetSetting(openKey) ~= false
+	local widget = plugin:CreateDockWidgetPluginGuiAsync(
+		if edit then id else `{id}Playtest{playtestLayout}`,
+		DockWidgetPluginGuiInfo.new(if edit then Enum.InitialDockState.Right else Enum.InitialDockState.Left, open, not edit, width, height, minWidth, minHeight)
+	)
+	widget:SetAttribute("TypeTorchOpenKey", openKey)
+	-- Remembers the width a moment after a resize settles (not while dragging, nor the 0 of a closing window).
+	local pending = 0
+	widget:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		pending += 1
+		local mine = pending
+		task.delay(1, function()
+			local size = widget.AbsoluteSize.X
+			if mine == pending and widget.Enabled and size >= minWidth then
+				pcall(plugin.SetSetting, plugin, widthKey(id), size)
+			end
+		end)
+	end)
+	return widget
+end
+
+-- Studio restores a dock widget's open state in Edit, but a playtest's DataModel opens it closed, and a playtest's
+-- copy of the plugin can't read what Edit saves meanwhile (plugin settings reach it only from earlier playtests). So
+-- playtests keep their own: open unless closed in an earlier playtest. A close is saved a moment later, so the
+-- teardown on Stop (which closes the window with the DataModel) doesn't count.
+function Widgets.keepOpen(plugin: Plugin, widget: DockWidgetPluginGui)
+	if game:GetService("RunService"):IsEdit() then
+		return
+	end
+	local key = widget:GetAttribute("TypeTorchOpenKey") or playtestOpenKey(widget.Name)
+	widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+		local enabled = widget.Enabled
+		task.delay(if enabled then 0 else 1, function()
+			if widget.Parent and widget.Enabled == enabled then
+				plugin:SetSetting(key, enabled)
+			end
+		end)
+	end)
+end
+
 function Widgets.make(className: string, props: { [string]: any }, parent: Instance?): any
 	local instance = Instance.new(className) :: any
 	for key, value in props do
