@@ -578,11 +578,21 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 		VerticalAlignment = Enum.VerticalAlignment.Center,
 		Padding = UDim.new(0, 6),
 	}, statusRow)
-	local status = style(make("TextLabel", { BackgroundTransparency = 1, Size = UDim2.fromOffset(150, ROUND), LayoutOrder = 1 }, statusRow), "Checking...", SMALL, COLORS.dim, FONT)
+	-- The status line: tap it for the recent chats.
+	local statusButton = make("TextButton", { AutoButtonColor = false, Text = "", BackgroundTransparency = 1, Size = UDim2.fromOffset(150, ROUND), LayoutOrder = 1 }, statusRow)
+	make("UIFlexItem", { FlexMode = Enum.UIFlexMode.Fill }, statusButton)
+	local status = style(make("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, -18, 1, 0) }, statusButton), "Checking...", SMALL, COLORS.dim, FONT)
 	status.TextWrapped = false
 	status.TextTruncate = Enum.TextTruncate.AtEnd
-	make("UIFlexItem", { FlexMode = Enum.UIFlexMode.Fill }, status)
 	self.status = status
+	local statusChevron = make("Frame", { BackgroundTransparency = 1, AnchorPoint = Vector2.new(1, 0.5), Position = UDim2.new(1, 0, 0.5, 0), Size = UDim2.fromOffset(14, 14) }, statusButton)
+	chevron(statusChevron, "down", COLORS.dim, 2)
+	local chats = make("Frame", { BackgroundTransparency = 1, Size = UDim2.fromScale(1, 0), AutomaticSize = Enum.AutomaticSize.Y, LayoutOrder = 2, Visible = false }, top)
+	list(chats, 4)
+	self.chats = chats
+	statusButton.Activated:Connect(function()
+		self:toggleChats()
+	end)
 	local newButton = style(make("TextButton", { AutoButtonColor = true, LayoutOrder = 2 }), "New chat", SMALL, COLORS.text, Enum.Font.BuilderSansMedium)
 	newButton.TextXAlignment = Enum.TextXAlignment.Center
 	newButton.TextWrapped = false
@@ -1104,6 +1114,13 @@ function Claude:buildMessage(id: string, prompt: string, mode: string?)
 	self:fitBubble(fit)
 	local reply = autoFrame(frame, 2)
 	list(reply, 8)
+	-- Copy: the whole reply as plain Markdown, pre-selected (a plugin has no clipboard; Ctrl+C copies it).
+	local copy = make("TextButton", { AutoButtonColor = true, Text = "", BackgroundTransparency = 1, Size = UDim2.fromOffset(28, 24), LayoutOrder = 100002, Visible = false }, reply)
+	for _, at in { { 4, 2 }, { 9, 7 } } do
+		local sheet = make("Frame", { BackgroundTransparency = 1, Position = UDim2.fromOffset(at[1], at[2]), Size = UDim2.fromOffset(12, 14) }, copy)
+		corner(sheet, 2)
+		make("UIStroke", { Color = DIMMER, Thickness = 1.5, ApplyStrokeMode = Enum.ApplyStrokeMode.Border }, sheet)
+	end
 	local outcome = label("", DIMMER, SMALL, false)
 	outcome.LayoutOrder = 100000
 	outcome.Visible = false
@@ -1114,7 +1131,11 @@ function Claude:buildMessage(id: string, prompt: string, mode: string?)
 		local dot = make("Frame", { BackgroundColor3 = COLORS.dim, BorderSizePixel = 0, Position = UDim2.fromOffset(index * 14, 3), Size = UDim2.fromOffset(8, 8) }, dots)
 		corner(dot, 4)
 	end
-	return {
+	local message
+	copy.Activated:Connect(function()
+		self:showCopy(self:replyText(message))
+	end)
+	message = {
 		id = id,
 		prompt = prompt,
 		state = "queued",
@@ -1128,7 +1149,139 @@ function Claude:buildMessage(id: string, prompt: string, mode: string?)
 		outcome = outcome,
 		dots = dots,
 		modeTag = modeTag,
+		copy = copy,
 	}
+	return message
+end
+
+-- The reply's plain text (for Copy).
+function Claude:replyText(message): string
+	local parts = {}
+	for _, segment in message.segments do
+		if segment.kind == "text" then
+			table.insert(parts, segment.text)
+		end
+	end
+	return table.concat(parts, "\n\n")
+end
+
+-- Text pre-selected in a read-only box over the window (Ctrl+C copies it); a click outside closes it.
+function Claude:showCopy(text: string)
+	if self.copyLayer then
+		self.copyLayer:Destroy()
+	end
+	local layer = make("TextButton", { AutoButtonColor = false, Text = "", BackgroundColor3 = Color3.new(0, 0, 0), BackgroundTransparency = 0.5, Size = UDim2.fromScale(1, 1), ZIndex = 30 }, self.widget)
+	self.copyLayer = layer
+	layer.Activated:Connect(function()
+		layer:Destroy()
+	end)
+	local panel = make("Frame", {
+		BackgroundColor3 = COLORS.header,
+		BorderSizePixel = 0,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, -24, 0.6, 0),
+		ZIndex = 31,
+		Active = true,
+	}, layer)
+	corner(panel, 12)
+	stroke(panel, COLORS.stroke)
+	pad(panel, 8, 10)
+	local hint = style(make("TextLabel", { BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, LINE), ZIndex = 32 }, panel), "Ctrl+C to copy", SMALL, DIMMER, FONT)
+	hint.TextWrapped = false
+	local scroll = make("ScrollingFrame", {
+		BackgroundColor3 = CODE_BG,
+		BorderSizePixel = 0,
+		Position = UDim2.fromOffset(0, LINE + 6),
+		Size = UDim2.new(1, 0, 1, -(LINE + 6)),
+		CanvasSize = UDim2.new(),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		ScrollingDirection = Enum.ScrollingDirection.Y,
+		ScrollBarThickness = 4,
+		ScrollBarImageColor3 = COLORS.dim,
+		ZIndex = 32,
+	}, panel)
+	corner(scroll, 8)
+	local box = style(make("TextBox", { BackgroundTransparency = 1, ClearTextOnFocus = false, TextEditable = false, MultiLine = true, ZIndex = 33 }, scroll), text, SMALL, CODE_TEXT, FONT)
+	box.TextWrapped = true
+	box.TextYAlignment = Enum.TextYAlignment.Top
+	box.Size = UDim2.fromScale(1, 0)
+	box.AutomaticSize = Enum.AutomaticSize.Y
+	pad(box, 6, 8)
+	box:CaptureFocus()
+	box.SelectionStart = 1
+	box.CursorPosition = #text + 1
+end
+
+-- Recent chats (tap the status line): up to 6, the current one highlighted; tap one to open it.
+function Claude:toggleChats()
+	local chats = self.chats
+	if chats.Visible then
+		chats.Visible = false
+		return
+	end
+	task.spawn(function()
+		local ok, reply = self:request("POST", "/tt/claude/v1", { user = userId(), method = "GET", path = "/v1/conversations" })
+		if not ok or type(reply) ~= "table" then
+			return self:notify(errorText(reply), COLORS.bad)
+		end
+		for _, child in chats:GetChildren() do
+			if child:IsA("GuiObject") then
+				child:Destroy()
+			end
+		end
+		local recent = if type(reply.conversations) == "table" then reply.conversations else {}
+		if #recent == 0 then
+			label("No chats yet", DIMMER, SMALL, false).Parent = chats
+		end
+		for index = 1, math.min(6, #recent) do
+			local conversation = recent[index]
+			local row = style(make("TextButton", { AutoButtonColor = true, LayoutOrder = index }), tostring(conversation.title or "chat"), SMALL, COLORS.text, FONT)
+			row.TextWrapped = false
+			row.TextTruncate = Enum.TextTruncate.AtEnd
+			row.BackgroundColor3 = if conversation.id == self.conversationId then COLORS.button else COLORS.row
+			row.Size = UDim2.new(1, 0, 0, ROUND)
+			corner(row, 8)
+			pad(row, 0, 10)
+			row.Parent = chats
+			row.Activated:Connect(function()
+				chats.Visible = false
+				task.spawn(function()
+					self:openConversation(conversation.id)
+				end)
+			end)
+		end
+		popIn(chats)
+	end)
+end
+
+-- Shows one of the dev's conversations: its prompts go in serve's chat, and the restore round rebuilds the transcript.
+function Claude:openConversation(id: string)
+	if id == self.conversationId then
+		return
+	end
+	if self:running() or self.sending then
+		return self:notify(errorText("busy"), COLORS.warn)
+	end
+	local ok, reply = self:request("POST", "/tt/claude/v1", { user = userId(), method = "GET", path = `/v1/conversations/{id}` })
+	if not ok or type(reply) ~= "table" or type(reply.messages) ~= "table" then
+		return self:notify(errorText(if ok then "Failed" else reply), COLORS.bad)
+	end
+	local ids = {}
+	for _, stored in reply.messages do
+		if type(stored.id) == "string" then
+			table.insert(ids, stored.id)
+			if type(stored.prompt) == "string" then
+				self.promptTexts[stored.id] = stored.prompt
+			end
+		end
+	end
+	self:notify("")
+	self.saving += 1
+	self:request("POST", "/tt/claude/chat", { user = userId(), conversationId = id, prompts = ids })
+	self.saving -= 1
+	self.lastChatCheck = -math.huge
+	self:restore()
 end
 
 function Claude:addNote(message, text: string, color: Color3)
@@ -1424,6 +1577,7 @@ function Claude:paintOutcome(message)
 	message.outcome.Text = text
 	message.outcome.TextColor3 = color
 	message.outcome.Visible = text ~= ""
+	message.copy.Visible = message.finished and self:replyText(message) ~= ""
 end
 
 function Claude:finish(message, state: string)
@@ -1811,6 +1965,7 @@ function Claude:cancel()
 end
 
 function Claude:newChat()
+	self.chats.Visible = false
 	self.conversationId = nil
 	self.paintMode()
 	self:clearTranscript()
