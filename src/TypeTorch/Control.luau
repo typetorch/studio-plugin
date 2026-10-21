@@ -126,6 +126,18 @@ function Control.request(endpoint: Endpoint, method: string, path: string, body:
 	return true, decoded
 end
 
+-- serve's Claude event stream (`/tt/claude/stream`, a WebSocket): its URL and headers for an endpoint. A remote serve
+-- knows the device's user from its token; locally the user is named in the URL.
+function Control.streamTarget(endpoint: Endpoint, userId: number): (string, { [string]: string })
+	local headers = { ["X-TypeTorch"] = "1" }
+	if type(endpoint) == "table" then
+		headers.Authorization = `Bearer {endpoint.token}`
+		local url = string.gsub(endpoint.url, "^http", "ws")
+		return `{url}/tt/claude/stream`, headers
+	end
+	return `ws://{Control.HOST}:{endpoint}/tt/claude/stream?user={userId}`, headers
+end
+
 -- Trades a pairing code from `typetorch serve pair` for a device token. `userId`: this Studio's Roblox user, whose
 -- prompts the Claude window sends. Returns (ok, token or error text).
 function Control.pair(url: string, code: string, name: string, userId: number?): (boolean, string)

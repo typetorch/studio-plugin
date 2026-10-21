@@ -3,8 +3,11 @@
 -- @typetorch/dev-server). A port of the in-game DEV > Claude tab (framework src/devtools/claude-ui.ts), Code mode only:
 -- the same status line, bubbles, Markdown, tool lines, working dots, scroll-to-bottom button, composer and deploy card.
 -- Studio has no screenshots, images, Toolbox grid or Live mode, so those are left out. Requests go through serve's
--- control API (`/tt/claude/...`), locally or through a paired remote serve.
+-- control API (`/tt/claude/...`), locally or through a paired remote serve. The running prompt's events come over
+-- serve's WebSocket stream (`/tt/claude/stream`) as they happen, also in the Play client (which can't make HTTP
+-- requests but can open the stream); HTTP polling stands in while there is no stream.
 
+local HttpService = game:GetService("HttpService")
 local TextService = game:GetService("TextService")
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
@@ -33,7 +36,11 @@ local CODE_BG = Color3.fromRGB(13, 14, 18)
 local CODE_TEXT = Color3.fromRGB(205, 210, 222)
 local DIMMER = Color3.fromRGB(118, 124, 138)
 local RESULT_DIM = Color3.fromRGB(88, 94, 106)
-local POLL_ACTIVE = 0.5
+local POLL_ACTIVE = 0.25
+-- Waits before opening the stream again after it failed (seconds, by failures in a row).
+local STREAM_RETRY = { 1, 2, 5, 10, 20 }
+-- While streaming: one HTTP check after this long without a push (the stream itself may have stalled).
+local STREAM_QUIET = 5
 local POLL_IDLE = 2
 local STATUS_REFRESH = 10
 -- Must match FINISHED_STATES in dev-server src/prompts.ts.
@@ -467,6 +474,10 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 	self.sending = false
 	self.failures = 0
 	self.lastStatus = -math.huge
+	self.stream = nil
+	self.streamFailures = 0
+	self.streamRetryAt = -math.huge
+	self.lastPush = -math.huge
 
 	local button = toolbar:CreateButton("TypeTorchClaude", "Prompt Claude Code on the typetorch serve machine", "", "Claude")
 	button.ClickableWhenViewportHidden = true
@@ -734,8 +745,13 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 				if widget.Enabled and (os.clock() - self.lastStatus >= STATUS_REFRESH or self.endpoint() ~= self.statusEndpoint) then
 					self:refreshStatus()
 				end
+				self:keepStream()
+				self:watchActive()
 				self:restore()
-				self:poll()
+				if not self:streaming() or os.clock() - self.lastPush >= STREAM_QUIET then
+					self.lastPush = os.clock()
+					self:poll()
+				end
 			end)
 			if not ok then
 				self:notify(`Failed: {err}`, COLORS.bad)
@@ -1158,10 +1174,138 @@ function Claude:finish(message, state: string)
 	self:paintComposer()
 end
 
+-- A prompt's view from serve (GET /tt/claude/prompt, or pushed by the stream): its new events, state and cursor.
+function Claude:applyView(message, reply)
+	self:applyEvents(message, reply.events or {})
+	message.cursor = math.max(message.cursor, reply.next or message.cursor)
+	message.state = reply.state or message.state
+	message.commit = reply.commit or message.commit
+	message.artifactId = reply.artifactId or message.artifactId
+	message.error = reply.error or message.error
+	message.proposal = reply.proposal or message.proposal
+	message.finished = FINISHED[message.state] == true
+	self:paintOutcome(message)
+	if message.finished then
+		self:paintComposer()
+	end
+end
+
+-- The stream ---------------------------------------------------------------------------------------------------------
+
+-- Opens the event stream to serve, or keeps the open one.
+function Claude:keepStream()
+	local endpoint = self.endpoint()
+	local stream = self.stream
+	if stream and (stream.closed or stream.endpoint ~= endpoint) then
+		self:closeStream()
+		stream = nil
+	end
+	if stream or endpoint == nil or os.clock() < self.streamRetryAt then
+		return
+	end
+	local url, headers = Control.streamTarget(endpoint, userId())
+	local ok, client = pcall(HttpService.CreateWebStreamClient, HttpService, Enum.WebStreamClientType.WebSocket, { Url = url, Headers = headers })
+	if not ok then
+		return self:streamFailed()
+	end
+	stream = { client = client, endpoint = endpoint, ready = false, closed = false, watching = nil, refused = {}, connections = {} }
+	self.stream = stream
+	local function lost()
+		if stream.closed then
+			return
+		end
+		stream.closed = true
+		if not stream.ready then
+			self:streamFailed()
+		end
+	end
+	table.insert(stream.connections, client.MessageReceived:Connect(function(text)
+		self:onStream(stream, text)
+	end))
+	table.insert(stream.connections, client.Closed:Connect(lost))
+	table.insert(stream.connections, client.Error:Connect(lost))
+end
+
+function Claude:streamFailed()
+	self.streamFailures += 1
+	self.streamRetryAt = os.clock() + STREAM_RETRY[math.min(self.streamFailures, #STREAM_RETRY)]
+end
+
+function Claude:closeStream()
+	local stream = self.stream
+	if not stream then
+		return
+	end
+	self.stream = nil
+	stream.closed = true
+	for _, connection in stream.connections do
+		connection:Disconnect()
+	end
+	pcall(stream.client.Close, stream.client)
+end
+
+-- The running prompt's events come over the stream.
+function Claude:streaming(): boolean
+	local stream = self.stream
+	return stream ~= nil and stream.ready and not stream.closed and self.active ~= nil and stream.watching == self.active.id
+end
+
+-- Asks the stream for the running prompt's events from its cursor on (again after a reconnect).
+function Claude:watchActive()
+	local stream = self.stream
+	local message = self.active
+	if not stream or not stream.ready or stream.closed or not message or message.finished or message.pending then
+		return
+	end
+	if stream.watching == message.id or stream.refused[message.id] then
+		return
+	end
+	if stream.watching then
+		pcall(stream.client.Send, stream.client, HttpService:JSONEncode({ unwatch = stream.watching }))
+	end
+	local sent = pcall(stream.client.Send, stream.client, HttpService:JSONEncode({ watch = message.id, since = message.cursor }))
+	stream.watching = if sent then message.id else nil
+	self.lastPush = os.clock()
+end
+
+function Claude:onStream(stream, text: string)
+	if self.stream ~= stream then
+		return
+	end
+	local ok, data = pcall(HttpService.JSONDecode, HttpService, text)
+	if not ok or type(data) ~= "table" then
+		return
+	end
+	local message = self.active
+	if data.type == "ready" then
+		stream.ready = true
+		self.streamFailures = 0
+		self:watchActive()
+	elseif data.type == "prompt" then
+		if not message or message.id ~= data.id then
+			return
+		end
+		self.lastPush = os.clock()
+		if type(data.since) == "number" and data.since > message.cursor then
+			-- Events between the cursor and this push never arrived: HTTP fetches them on the next round.
+			self.lastPush = -math.huge
+			return
+		end
+		self:applyView(message, data)
+	elseif data.type == "error" and message and data.id == message.id then
+		-- The stream gave up on this prompt: HTTP polling takes over (or it is gone).
+		stream.refused[message.id] = true
+		stream.watching = nil
+		if data.status == 404 then
+			self:finish(message, "lost")
+		end
+	end
+end
+
 -- One round of polling for the running message (more pages right away when the dev machine has them).
 function Claude:poll()
 	local message = self.active
-	if not message or message.finished then
+	if not message or message.finished or message.pending then
 		return
 	end
 	self:fetch(message, 5)
@@ -1184,20 +1328,8 @@ function Claude:fetch(message, pages: number)
 			return
 		end
 		self.failures = 0
-		self:applyEvents(message, reply.events or {})
-		message.cursor = math.max(message.cursor, reply.next or message.cursor)
-		message.state = reply.state or message.state
-		message.commit = reply.commit or message.commit
-		message.artifactId = reply.artifactId or message.artifactId
-		message.error = reply.error or message.error
-		message.proposal = reply.proposal or message.proposal
-		message.finished = FINISHED[message.state] == true
-		self:paintOutcome(message)
-		if message.finished then
-			self:paintComposer()
-			return
-		end
-		if reply.more ~= true then
+		self:applyView(message, reply)
+		if message.finished or reply.more ~= true then
 			return
 		end
 	end
@@ -1212,6 +1344,9 @@ function Claude:save()
 	local ids = {}
 	for index = math.max(1, #self.messages - KEEP_MESSAGES + 1), #self.messages do
 		local message = self.messages[index]
+		if message.pending then
+			continue
+		end
 		self.promptTexts[message.id] = message.prompt
 		table.insert(ids, message.id)
 	end
@@ -1288,6 +1423,9 @@ function Claude:send()
 		return self:notify(errorText("too_long"), COLORS.warn)
 	end
 	self.sending = true
+	self.box.Text = ""
+	-- The bubble and the working dots show at once; the message gets its id when serve answers.
+	local message = self:addPending(prompt)
 	task.spawn(function()
 		local ok, reply = self:request("POST", "/tt/claude/prompt", { prompt = prompt, conversationId = self.conversationId, user = userId() })
 		local restarted = false
@@ -1296,6 +1434,7 @@ function Claude:send()
 			restarted = true
 			self.conversationId = nil
 			self:clearTranscript()
+			message = self:addPending(prompt)
 			ok, reply = self:request("POST", "/tt/claude/prompt", { prompt = prompt, user = userId() })
 		end
 		self.sending = false
@@ -1303,28 +1442,57 @@ function Claude:send()
 			if reply == "not_connected" or self.endpoint() == nil then
 				self.lastStatus = -math.huge
 			end
+			self:dropPending(message, prompt)
 			return self:notify(errorText(if ok then "Failed" else reply), COLORS.bad)
 		end
 		self:notify(if restarted then "The old chat was gone: started a new one" else "")
-		self.box.Text = ""
 		self.conversationId = reply.conversationId or self.conversationId
-		local message = self:buildMessage(reply.id, prompt)
-		message.state = reply.state or "queued"
-		table.insert(self.messages, message)
-		self.active = message
-		self.failures = 0
+		message.id = reply.id
+		message.pending = nil
+		message.state = reply.state or message.state
 		self:save()
-		self:paintOutcome(message)
-		self:paintEmpty()
-		self:paintComposer()
-		self.scrollToEnd()
+		self:watchActive()
+		if not self:streaming() then
+			self:poll()
+		end
 	end)
+end
+
+-- A message being sent: shown at once, without an id until serve answers.
+function Claude:addPending(prompt: string)
+	local message = self:buildMessage("", prompt)
+	message.pending = true
+	table.insert(self.messages, message)
+	self.active = message
+	self.failures = 0
+	self:paintOutcome(message)
+	self:paintEmpty()
+	self:paintComposer()
+	self.scrollToEnd()
+	return message
+end
+
+-- The send failed: the bubble goes and the text is back in the box.
+function Claude:dropPending(message, prompt: string)
+	message.frame:Destroy()
+	local index = table.find(self.messages, message)
+	if index then
+		table.remove(self.messages, index)
+	end
+	if self.active == message then
+		self.active = nil
+	end
+	if self.box.Text == "" then
+		self.box.Text = prompt
+	end
+	self:paintEmpty()
+	self:paintComposer()
 end
 
 -- Stop. If the dev machine can't be told (gone, or the run already ended), the run ends here anyway.
 function Claude:cancel()
 	local message = self.active
-	if not message or message.finished then
+	if not message or message.finished or message.pending then
 		return
 	end
 	task.spawn(function()
