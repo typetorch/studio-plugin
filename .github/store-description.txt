@@ -1,0 +1,3 @@
+TypeTorch Sync: attaches Roblox Studio to `typetorch serve` by itself and keeps it synced, with no Connect button and no reconnecting by hand. It also lets an agent drive Studio (play, stop, Output), pushes code into a running playtest, and publishes hot assets from a panel.
+
+Docs and source: github.com/typetorch/studio-plugin

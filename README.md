@@ -19,7 +19,8 @@ finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
 
 `npm version <x.y.z> -m "release %s" && git push origin main --follow-tags`. The tag runs `.github/workflows/release.yml`
 (nothing else does: no PR or branch runs): it builds `TypeTorchSync.rbxm`, publishes the GitHub release, and for a
-stable version (no `-rc`) updates the plugin's Roblox asset through Open Cloud. That last job reads only the GitHub
+stable version (no `-rc`) updates the plugin's Roblox asset through Open Cloud: the rbxm, then the description
+(`.github/store-description.txt` plus the version, the date and the commits since the previous tag). That last job reads only the GitHub
 environment `roblox`: secret `ROBLOX_API_KEY` (an Open Cloud key with the **Assets** API, Read + Write, owned by the
 asset's creator), variable `ROBLOX_PLUGIN_ASSET_ID`. Without them it skips.
 
