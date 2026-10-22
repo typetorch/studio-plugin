@@ -705,6 +705,7 @@ end
 
 function App.start(plugin: Plugin)
 	state.plugin = plugin
+	Control.settings = plugin
 	plugin.Unloading:Connect(function()
 		state.plugin = nil
 		stopSession()

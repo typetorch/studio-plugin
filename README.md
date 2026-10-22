@@ -15,6 +15,15 @@ From a checkout of this repo instead: `rojo build default.project.json --plugin 
 `typetorch studio install-plugin --from <this folder>`). The plugin is not on npm. Then run `typetorch serve` in the game folder: the plugin
 finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
 
+## Releasing
+
+`npm version <x.y.z> -m "release %s" && git push origin main --follow-tags`. The tag runs `.github/workflows/release.yml`
+(nothing else does: no PR or branch runs): it builds `TypeTorchSync.rbxm`, publishes the GitHub release, and for a
+stable version (no `-rc`) updates the plugin's Roblox asset through Open Cloud: the rbxm, then the description
+(`.github/store-description.txt` plus the version, the date and the commits since the previous tag). That last job reads only the GitHub
+environment `roblox`: secret `ROBLOX_API_KEY` (an Open Cloud key with the **Assets** API, Read + Write, owned by the
+asset's creator), variable `ROBLOX_PLUGIN_ASSET_ID`. Without them it skips.
+
 ## Working with someone else's serve
 
 The owner runs `typetorch serve --remote` and points a tunnel at it (Cloudflare Tunnel: `service:
@@ -35,7 +44,8 @@ again after updating the plugin, so serve knows your Roblox user; the owner adds
 The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two must change together.
 
 - `src/Main.server.luau`: the plugin script.
-- `src/TypeTorch/App.luau`: finds the server (`GET /tt/hello` on 34880-34887), picks the one whose universeId matches
+- `src/TypeTorch/App.luau`: finds the server (`GET /tt/hello` on 34880-34887, one port at a time so Studio asks for HTTP
+  permission only for ports a serve uses: `Control.discover`), picks the one whose universeId matches
   the place, runs Rojo's sync, reconnects, reports to the server. In a playtest's server it syncs into the running game
   and sets `ServerStorage.TypeTorchDev`'s `LiveReload` attribute, which makes the kernel (0.5.4+) reload on changes.
 - `src/TypeTorch/Agent.luau`: in every DataModel (edit, playtest server and client): runs the commands an agent sends

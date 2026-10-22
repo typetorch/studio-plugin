@@ -3,6 +3,10 @@
 #   npm version <x.y.z> -m "release %s" && git push origin main --follow-tags
 # The tag must match package.json. Install a release: download TypeTorchSync.rbxm into Studio's plugins folder
 # (Windows: %LOCALAPPDATA%\Roblox\Plugins) and restart Studio, or reload plugins.
+# A stable tag (no "-" in the version) then updates the plugin's Creator Store asset through Open Cloud (job "roblox",
+# .github/scripts/roblox-upload.sh): the rbxm, then the description (.github/store-description.txt + version, date, changes).
+# Its key lives only in the "roblox" environment: secret ROBLOX_API_KEY, variable ROBLOX_PLUGIN_ASSET_ID (optional
+# ROBLOX_ASSET_TYPE, default Plugin). Without them the job is skipped with a notice and the GitHub release still ships.
 name: Release
 
 on:
@@ -52,3 +56,29 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" TypeTorchSync.rbxm --title "${GITHUB_REF_NAME}" --generate-notes $prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+
+  roblox:
+    needs: build
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    environment: roblox
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags and history for the description's change list
+      - uses: actions/download-artifact@v4
+        with:
+          name: TypeTorchSync-${{ github.sha }}
+      - name: Update the Roblox asset
+        run: |
+          if [ -z "${API_KEY}" ] || [ -z "${ASSET_ID}" ]; then
+            echo "::notice::ROBLOX_API_KEY or ROBLOX_PLUGIN_ASSET_ID not set in the roblox environment, skipping the upload"
+            exit 0
+          fi
+          .github/scripts/roblox-upload.sh
+        env:
+          API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          ASSET_ID: ${{ vars.ROBLOX_PLUGIN_ASSET_ID }}
+          ASSET_TYPE: ${{ vars.ROBLOX_ASSET_TYPE }}
