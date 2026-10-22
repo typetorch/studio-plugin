@@ -57,9 +57,10 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
 - `src/TypeTorch/Assets.luau`: hot assets in the place (add, remove, the sync's rules) and their export from the open
   place (`SerializationService`, the same format as the CLI's export task); the panel's Check / Upload / Publish to dev
   buttons send that export to `typetorch serve` as a job (`POST /tt/jobs`, `assets status|sync --studio-export`).
-- `src/TypeTorch/Icons.luau`: the toolbar button's icon per connection state (gray waiting, amber connecting, green
-  synced, red disconnected): `rbxassetid://<id>` of each image, once the TypeTorch icon set is picked and uploaded.
-  An empty id keeps Studio's default icon.
+- `src/TypeTorch/Icons.luau`: the toolbar icons as `rbxassetid://<id>`: the TypeTorch button's per connection state
+  (gray waiting, amber connecting, green synced, red disconnected) and the Claude button's. Their PNGs are in
+  `assets/icons/`; `bun scripts/upload-icons.ts --user <id> [--env-file <game repo>/.env]` (or `--group <id>`) uploads
+  them as Images with an Open Cloud assets key and fills the ids in. An empty id keeps Studio's default icon.
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
 - `src/TypeTorch/Claude.luau`: the Claude window (`/tt/claude/...` on serve, which talks to remote-claude).
 - `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract): a local port, or
