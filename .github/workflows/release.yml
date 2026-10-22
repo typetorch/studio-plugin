@@ -1,0 +1,54 @@
+# Builds TypeTorchSync.rbxm with Rojo (the version rokit.toml pins) and publishes it as a GitHub release, with the rbxm
+# also kept as a workflow artifact. Runs only on a version tag pushed by a maintainer, never on PRs (no npm):
+#   npm version <x.y.z> -m "release %s" && git push origin main --follow-tags
+# The tag must match package.json. Install a release: download TypeTorchSync.rbxm into Studio's plugins folder
+# (Windows: %LOCALAPPDATA%\Roblox\Plugins) and restart Studio, or reload plugins.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # the GitHub release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rojo
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^rojo = "rojo-rbx\/rojo@\(.*\)"/\1/p' rokit.toml)
+          curl -sSLf -o "$RUNNER_TEMP/rojo.zip" "https://github.com/rojo-rbx/rojo/releases/download/v${version}/rojo-${version}-linux-x86_64.zip"
+          unzip -oq "$RUNNER_TEMP/rojo.zip" -d "$RUNNER_TEMP/tools"
+          chmod +x "$RUNNER_TEMP/tools/rojo"
+          echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: Build TypeTorchSync.rbxm
+        run: |
+          rojo --version
+          rojo build default.project.json -o TypeTorchSync.rbxm
+          ls -l TypeTorchSync.rbxm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TypeTorchSync-${{ github.sha }}
+          path: TypeTorchSync.rbxm
+          if-no-files-found: error
+      - name: GitHub release
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} but package.json is ${version}"
+            exit 1
+          fi
+          prerelease=""
+          case "$version" in *-*) prerelease=--prerelease ;; esac
+          gh release create "${GITHUB_REF_NAME}" TypeTorchSync.rbxm --title "${GITHUB_REF_NAME}" --generate-notes $prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}

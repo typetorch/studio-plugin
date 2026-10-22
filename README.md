@@ -9,16 +9,10 @@ into a running playtest (kernel 0.5.4+), and publishes hot assets from a panel: 
 
 ## Install
 
-In a TypeTorch game repo:
-
-```sh
-bun add -d @typetorch/studio-plugin
-bunx typetorch studio install-plugin
-```
-
-`install-plugin` builds this package with Rojo into Studio's plugins folder as `TypeTorchSync.rbxm`; restart Studio
-(or reload plugins). From a checkout of this repo instead: `rojo build default.project.json --plugin TypeTorchSync.rbxm`
-(or `typetorch studio install-plugin --from <this folder>`). Then run `typetorch serve` in the game folder: the plugin
+Download `TypeTorchSync.rbxm` from the [latest release](https://github.com/typetorch/studio-plugin/releases/latest)
+into Studio's plugins folder (Windows: `%LOCALAPPDATA%\Roblox\Plugins`), then restart Studio (or reload plugins).
+From a checkout of this repo instead: `rojo build default.project.json --plugin TypeTorchSync.rbxm` (or
+`typetorch studio install-plugin --from <this folder>`). The plugin is not on npm. Then run `typetorch serve` in the game folder: the plugin
 finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
 
 ## Working with someone else's serve
