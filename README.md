@@ -15,6 +15,14 @@ From a checkout of this repo instead: `rojo build default.project.json --plugin 
 `typetorch studio install-plugin --from <this folder>`). The plugin is not on npm. Then run `typetorch serve` in the game folder: the plugin
 finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
 
+## Releasing
+
+`npm version <x.y.z> -m "release %s" && git push origin main --follow-tags`. The tag runs `.github/workflows/release.yml`
+(nothing else does: no PR or branch runs): it builds `TypeTorchSync.rbxm`, publishes the GitHub release, and for a
+stable version (no `-rc`) updates the plugin's Roblox asset through Open Cloud. That last job reads only the GitHub
+environment `roblox`: secret `ROBLOX_API_KEY` (an Open Cloud key with the **Assets** API, Read + Write, owned by the
+asset's creator), variable `ROBLOX_PLUGIN_ASSET_ID`. Without them it skips.
+
 ## Working with someone else's serve
 
 The owner runs `typetorch serve --remote` and points a tunnel at it (Cloudflare Tunnel: `service:

@@ -3,6 +3,9 @@
 #   npm version <x.y.z> -m "release %s" && git push origin main --follow-tags
 # The tag must match package.json. Install a release: download TypeTorchSync.rbxm into Studio's plugins folder
 # (Windows: %LOCALAPPDATA%\Roblox\Plugins) and restart Studio, or reload plugins.
+# A stable tag (no "-" in the version) then updates the plugin's Creator Store asset through Open Cloud (job "roblox").
+# Its key lives only in the "roblox" environment: secret ROBLOX_API_KEY, variable ROBLOX_PLUGIN_ASSET_ID (optional
+# ROBLOX_ASSET_TYPE, default Plugin). Without them the job is skipped with a notice and the GitHub release still ships.
 name: Release
 
 on:
@@ -52,3 +55,54 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" TypeTorchSync.rbxm --title "${GITHUB_REF_NAME}" --generate-notes $prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+
+  roblox:
+    needs: build
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    environment: roblox
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: TypeTorchSync-${{ github.sha }}
+      - name: Update the Roblox asset
+        run: |
+          set -euo pipefail
+          if [ -z "${API_KEY}" ] || [ -z "${ASSET_ID}" ]; then
+            echo "::notice::ROBLOX_API_KEY or ROBLOX_PLUGIN_ASSET_ID not set in the roblox environment, skipping the upload"
+            exit 0
+          fi
+          api=https://apis.roblox.com/assets/v1
+          request=$(jq -cn --arg type "${ASSET_TYPE:-Plugin}" --arg id "$ASSET_ID" '{assetType: $type, assetId: $id}')
+          code=$(curl -sS -o "$RUNNER_TEMP/patch.json" -w '%{http_code}' -X PATCH "$api/assets/$ASSET_ID" \
+            -H "x-api-key: $API_KEY" \
+            -F "request=$request" \
+            -F "fileContent=@TypeTorchSync.rbxm;type=model/x-rbxm")
+          cat "$RUNNER_TEMP/patch.json"; echo
+          if [ "$code" != 200 ]; then
+            echo "::error::Open Cloud PATCH returned HTTP $code"
+            exit 1
+          fi
+          operation=$(jq -r '.path // empty' "$RUNNER_TEMP/patch.json")
+          [ -n "$operation" ] || { echo "::error::no operation in the response"; exit 1; }
+          for _ in $(seq 1 30); do
+            sleep 2
+            curl -sSf -o "$RUNNER_TEMP/op.json" -H "x-api-key: $API_KEY" "$api/$operation"
+            if [ "$(jq -r '.done // false' "$RUNNER_TEMP/op.json")" = true ]; then
+              cat "$RUNNER_TEMP/op.json"; echo
+              if ! jq -e '.response' "$RUNNER_TEMP/op.json" > /dev/null; then
+                echo "::error::Open Cloud rejected the upload"
+                exit 1
+              fi
+              version=$(jq -r '.response.revisionId // .response.assetVersionNumber // "?"' "$RUNNER_TEMP/op.json")
+              echo "::notice::asset $ASSET_ID updated to ${GITHUB_REF_NAME} (version $version)"
+              exit 0
+            fi
+          done
+          echo "::error::operation $operation not done after 60 s"
+          exit 1
+        env:
+          API_KEY: ${{ secrets.ROBLOX_API_KEY }}
+          ASSET_ID: ${{ vars.ROBLOX_PLUGIN_ASSET_ID }}
+          ASSET_TYPE: ${{ vars.ROBLOX_ASSET_TYPE }}
