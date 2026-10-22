@@ -1,18 +1,20 @@
-# Builds TypeTorchSync.rbxm with Rojo (the version rokit.toml pins) on every push and PR, and keeps it as a workflow
-# artifact. A version tag publishes it as a GitHub release (no npm):
+# Builds TypeTorchSync.rbxm with Rojo (the version rokit.toml pins) and publishes it as a GitHub release, with the rbxm
+# also kept as a workflow artifact. Runs only on a version tag pushed by a maintainer, never on PRs (no npm):
 #   npm version <x.y.z> -m "release %s" && git push origin main --follow-tags
 # The tag must match package.json. Install a release: download TypeTorchSync.rbxm into Studio's plugins folder
 # (Windows: %LOCALAPPDATA%\Roblox\Plugins) and restart Studio, or reload plugins.
-name: Build
+name: Release
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
-  pull_request:
 
 permissions:
-  contents: write # the GitHub release on a tag
+  contents: write # the GitHub release
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -38,7 +40,6 @@ jobs:
           path: TypeTorchSync.rbxm
           if-no-files-found: error
       - name: GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
           version=$(node -p "require('./package.json').version")
