@@ -8,7 +8,10 @@ into a running playtest (kernel 0.5.4+), and publishes hot assets from a panel: 
 **Publish to dev**, with no place publish first.
 
 ## Install
+#### Asset Store
+Can be found on [Roblox Asset Store](https://create.roblox.com/store/asset/135066807179101/TypeTorch)
 
+#### Local Plugin from GitHub
 Download `TypeTorchSync.rbxm` from the [latest release](https://github.com/typetorch/studio-plugin/releases/latest)
 into Studio's plugins folder (Windows: `%LOCALAPPDATA%\Roblox\Plugins`), then restart Studio (or reload plugins).
 From a checkout of this repo instead: `rojo build default.project.json --plugin TypeTorchSync.rbxm` (or
