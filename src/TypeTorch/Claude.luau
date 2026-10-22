@@ -22,6 +22,7 @@ local UserInputService = game:GetService("UserInputService")
 local Control = require(script.Parent.Control)
 local StudioTools = require(script.Parent.StudioTools)
 local Widgets = require(script.Parent.Widgets)
+local Icons = require(script.Parent.Icons)
 local COLORS = Widgets.COLORS
 local make = Widgets.make
 local corner = Widgets.corner
@@ -656,7 +657,7 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 	-- Screenshots for the next message: { contentId, captureTime } (at most MAX_SHOTS).
 	self.shots = {}
 
-	local button = toolbar:CreateButton("TypeTorchClaude", "Prompt Claude Code on the typetorch serve machine", "", "Claude")
+	local button = toolbar:CreateButton("TypeTorchClaude", "Prompt Claude Code on the typetorch serve machine", Icons.claude, "Claude")
 	button.ClickableWhenViewportHidden = true
 	local widget = Widgets.dock(plugin, "TypeTorchClaude", 360, 520, 280, 300)
 	widget.Title = "TypeTorch Claude"
