@@ -3,7 +3,8 @@
 -- @typetorch/dev-server). A port of the in-game DEV > Claude tab (framework src/devtools/claude-ui.ts): the same status
 -- line, bubbles, Markdown, tool lines, working dots, scroll-to-bottom button, composer, Live / Code pill, "+" menu
 -- (Dex path = the Studio selection, My logs, Server logs, Toolbox) and deploy card. Studio sends Code only: Live works
--- from the in-game tab. Requests go through serve's
+-- from the in-game tab. Claude's game tools (inspect, find, logs, status, run_luau) act on this Studio's open place
+-- (StudioTools). Requests go through serve's
 -- control API (`/tt/claude/...`), locally or through a paired remote serve. The running prompt's events come over
 -- serve's WebSocket stream (`/tt/claude/stream`) as they happen, also in the Play client (which can't make HTTP
 -- requests but can open the stream); HTTP polling stands in while there is no stream.
@@ -19,6 +20,7 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local Control = require(script.Parent.Control)
+local StudioTools = require(script.Parent.StudioTools)
 local Widgets = require(script.Parent.Widgets)
 local COLORS = Widgets.COLORS
 local make = Widgets.make
@@ -1183,6 +1185,9 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 			task.wait(if self:running() then POLL_ACTIVE else POLL_IDLE)
 		end
 	end)
+
+	-- Claude's game tools for prompts from this Studio: answered here, on the open place (Edit only).
+	StudioTools.start(self, userId)
 	return self
 end
 
