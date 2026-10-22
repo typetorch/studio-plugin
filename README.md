@@ -44,7 +44,8 @@ again after updating the plugin, so serve knows your Roblox user; the owner adds
 The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two must change together.
 
 - `src/Main.server.luau`: the plugin script.
-- `src/TypeTorch/App.luau`: finds the server (`GET /tt/hello` on 34880-34887), picks the one whose universeId matches
+- `src/TypeTorch/App.luau`: finds the server (`GET /tt/hello` on 34880-34887, one port at a time so Studio asks for HTTP
+  permission only for ports a serve uses: `Control.discover`), picks the one whose universeId matches
   the place, runs Rojo's sync, reconnects, reports to the server. In a playtest's server it syncs into the running game
   and sets `ServerStorage.TypeTorchDev`'s `LiveReload` attribute, which makes the kernel (0.5.4+) reload on changes.
 - `src/TypeTorch/Agent.luau`: in every DataModel (edit, playtest server and client): runs the commands an agent sends

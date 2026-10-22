@@ -12,6 +12,12 @@ local Control = {}
 Control.PORTS = { 34880, 34881, 34882, 34883, 34884, 34885, 34886, 34887 }
 Control.HOST = "localhost"
 
+-- Studio asks for HTTP permission once per host:port, so discovery never probes the whole range at once: see
+-- Control.discover. Ports where a serve has answered are remembered in this plugin setting (they already have
+-- permission). App sets Control.settings to the plugin.
+Control.settings = nil :: Plugin?
+local KNOWN_PORTS_SETTING = "TypeTorchKnownPorts"
+
 export type Remote = { url: string, token: string }
 export type Endpoint = number | Remote
 
@@ -210,8 +216,43 @@ function Control.pair(url: string, code: string, name: string, userId: number?):
 	return true, decoded.token
 end
 
--- Probes every control port at once (or only the remote serve when one is set); returns the servers that answered
--- as typetorch serve.
+local function knownPorts(): { [number]: boolean }
+	local known = {}
+	local ok, saved = pcall(function()
+		return Control.settings and Control.settings:GetSetting(KNOWN_PORTS_SETTING)
+	end)
+	if ok and type(saved) == "table" then
+		for _, port in saved do
+			if type(port) == "number" then
+				known[port] = true
+			end
+		end
+	end
+	return known
+end
+
+local function rememberPort(known: { [number]: boolean }, port: number)
+	if known[port] then
+		return
+	end
+	known[port] = true
+	local list = {}
+	for _, p in Control.PORTS do
+		if known[p] then
+			table.insert(list, p)
+		end
+	end
+	pcall(function()
+		if Control.settings then
+			Control.settings:SetSetting(KNOWN_PORTS_SETTING, list)
+		end
+	end)
+end
+
+-- Finds the servers that answer as typetorch serve (or only the remote serve when one is set). serve takes the first
+-- free control port, so the ports are probed in order, one at a time: the first port, each port after one that
+-- answered, and any port a serve answered on before. It stops at the serve for this experience. With one serve
+-- running, Studio asks for HTTP permission once (its port), not once per port of the range.
 function Control.discover(): { { port: Endpoint, hello: Hello } }
 	local remote = Control.remote
 	if remote then
@@ -222,29 +263,23 @@ function Control.discover(): { { port: Endpoint, hello: Hello } }
 		Control.lastRemoteError = if ok then "not a typetorch serve" else tostring(hello)
 		return {}
 	end
+	local known = knownPorts()
 	local found = {}
-	local pending = #Control.PORTS
-	local thread = coroutine.running()
-	local waiting = false
+	local previousAnswered = true
 	for _, port in Control.PORTS do
-		task.spawn(function()
-			local ok, hello = Control.request(port, "GET", "/tt/hello")
-			if ok and type(hello) == "table" and hello.app == "typetorch-serve" then
-				table.insert(found, { port = port, hello = hello })
+		if not previousAnswered and not known[port] then
+			continue
+		end
+		local ok, hello = Control.request(port, "GET", "/tt/hello")
+		previousAnswered = ok and type(hello) == "table" and hello.app == "typetorch-serve"
+		if previousAnswered then
+			rememberPort(known, port)
+			table.insert(found, { port = port, hello = hello })
+			if game.GameId ~= 0 and hello.universeId == game.GameId then
+				break
 			end
-			pending -= 1
-			if pending == 0 and waiting then
-				task.spawn(thread)
-			end
-		end)
+		end
 	end
-	if pending > 0 then
-		waiting = true
-		coroutine.yield()
-	end
-	table.sort(found, function(a, b)
-		return (a.port :: number) < (b.port :: number)
-	end)
 	return found
 end
 
