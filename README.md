@@ -37,10 +37,15 @@ buttons run there. **Use local serve** goes back. See the CLI's README ("A Studi
 ## Claude
 
 The toolbar's **Claude** button opens a chat with Claude Code on the machine that runs `typetorch serve --claude`
-(remote-claude from `@typetorch/dev-server`), like the in-game DEV > Claude tab: it edits that serve's dev branch, and
-when it's done you choose **Deploy** or **Discard**. It works with a local serve and with a paired remote one (pair
-again after updating the plugin, so serve knows your Roblox user; the owner adds your user id with
-`--claude-users`). Claude acting inside Studio itself isn't there yet.
+(remote-claude from `@typetorch/dev-server`). It works with a local serve and with a paired remote one (pair again
+after updating the plugin, so serve knows your Roblox user; the owner adds your user id with `--claude-users`). Each
+dev has their own worktree there, so several devs can use it at once.
+
+- Code changes: when Claude is done you choose **Apply** (into the checkout serve's Rojo syncs to Studio), **Deploy to
+  dev** or **Discard**.
+- The open place: Claude can read it (`inspect`, `find`, Studio output, status) and change it with Luau snippets that
+  run in this Studio's Edit DataModel at once, each one undo step (Ctrl+Z); the code shows in the chat. Only prompts
+  sent from this chat are answered (`src/TypeTorch/StudioTools.luau`). Save or publish the place to keep the changes.
 
 ## Layout
 
@@ -62,6 +67,7 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
   An empty id keeps Studio's default icon.
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
 - `src/TypeTorch/Claude.luau`: the Claude window (`/tt/claude/...` on serve, which talks to remote-claude).
+- `src/TypeTorch/StudioTools.luau`: Claude's game tools on the open place, for prompts from this chat (Edit only).
 - `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract): a local port, or
   a paired remote serve (its URL plus a device token; Rojo at `<url>/r/<token>`).
 - `vendor/rojo/`: Rojo's plugin core, unchanged except where marked.
