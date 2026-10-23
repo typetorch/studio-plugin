@@ -94,23 +94,29 @@ The toolbar's **Claude** button opens a chat with Claude Code on the machine tha
 with a paired remote one, through serve's `/tt/claude/...` routes; replies stream over serve's WebSocket
 (`/tt/claude/stream`), with HTTP polling while there is no stream. Only allowed Roblox users can prompt: serve's
 `--claude-users <ids>`, by default the owners in `typetorch.json`. A remote Studio prompts as the user it paired with,
-so the owner adds a helper's id there (pair again after updating the plugin, so serve knows your user).
+so the owner adds a helper's id there (pair again after updating the plugin, so serve knows your user). Each dev has
+their own worktree on the serve machine, so several devs can use it at once.
 
-- **Code only from Studio**: Claude edits the serve machine's dev branch. The Live / Code pill shows the mode, but Live
-  (game tools on a running server) works only from the in-game tab.
+- **Code mode from Studio**: Claude edits a copy of the serve machine's branch. The Live / Code pill shows the mode;
+  Live (game tools on a running server) works from the in-game tab.
+- **The open place**: Claude can read it (`inspect`, `find`, Studio output, status) and change it with Luau snippets
+  that run in this Studio's Edit DataModel at once, each one undo step (Ctrl+Z); the code shows in the chat. Only
+  prompts sent from this chat are answered (`src/TypeTorch/StudioTools.luau`). Save or publish the place to keep the
+  changes.
 - **"+" menu** for the next message: **Dex path** (the Studio selection), **My logs** (this DataModel's Output),
   **Server logs** and **Screenshot** (in Play only), **Toolbox** (Creator Store tools for that message only).
 - **New chat**; tap the status line for recent chats; the copy icon on a reply selects its Markdown for Ctrl+C. Images
   Claude shows are drawn in the chat. The chat is kept on serve per user, so it follows you between Edit and Play.
-- **Deploy this change?** When a run changed files, remote-claude commits them and the reply ends in a card with the
+- **Apply this change?** When a run changed files, remote-claude commits them and the reply ends in a card with the
   summary and the changed files (+/- lines):
-  - **Deploy** asks remote-claude to run `typetorch deploy` of that commit to the dev branch; the card shows
-    "Deploying...", "Waiting for approval on your PC" when the deploy needs the owner's approval, then "Deployed" with
-    the build id (or why it failed). Running dev servers hot-swap to it.
-  - **Discard** drops the commit (the worktree goes back to before the run).
-  - With no answer in 15 minutes the change is discarded. Only the user who sent the prompt can decide.
-
-Claude acting inside Studio itself isn't there yet.
+  - **Apply** (green) puts the change into the checkout serve's Rojo syncs to Studio, uncommitted, so you review and
+    commit it there. A change to lines that changed there too is refused and the checkout is left as it was.
+  - **Deploy to dev** runs `typetorch deploy` of that commit to the dev branch; the card shows "Deploying...",
+    "Waiting for approval on your PC" when the deploy needs the owner's approval, then "Deployed" with the build id
+    (or why it failed). Running dev servers hot-swap to it.
+  - **Discard** drops the commit.
+  - With no answer in 15 minutes the change is discarded. Only the user who sent the prompt can decide. A card whose
+    change was lost to a restart of serve or remote-claude says so.
 
 ## Layout
 
@@ -133,6 +139,7 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
   them as Images with an Open Cloud assets key and fills the ids in. An empty id keeps Studio's default icon.
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
 - `src/TypeTorch/Claude.luau`: the Claude window (`/tt/claude/...` on serve, which talks to remote-claude).
+- `src/TypeTorch/StudioTools.luau`: Claude's game tools on the open place, for prompts from this chat (Edit only).
 - `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract): a local port, or
   a paired remote serve (its URL plus a device token; Rojo at `<url>/r/<token>`).
 - `vendor/rojo/`: Rojo's plugin core, unchanged except where marked.

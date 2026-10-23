@@ -3,7 +3,8 @@
 -- @typetorch/dev-server). A port of the in-game DEV > Claude tab (framework src/devtools/claude-ui.ts): the same status
 -- line, bubbles, Markdown, tool lines, working dots, scroll-to-bottom button, composer, Live / Code pill, "+" menu
 -- (Dex path = the Studio selection, My logs, Server logs, Toolbox) and deploy card. Studio sends Code only: Live works
--- from the in-game tab. Requests go through serve's
+-- from the in-game tab. Claude's game tools (inspect, find, logs, status, run_luau) act on this Studio's open place
+-- (StudioTools). Requests go through serve's
 -- control API (`/tt/claude/...`), locally or through a paired remote serve. The running prompt's events come over
 -- serve's WebSocket stream (`/tt/claude/stream`) as they happen, also in the Play client (which can't make HTTP
 -- requests but can open the stream); HTTP polling stands in while there is no stream.
@@ -19,6 +20,7 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local Control = require(script.Parent.Control)
+local StudioTools = require(script.Parent.StudioTools)
 local Widgets = require(script.Parent.Widgets)
 local Icons = require(script.Parent.Icons)
 local COLORS = Widgets.COLORS
@@ -51,7 +53,7 @@ local STREAM_QUIET = 5
 local POLL_IDLE = 2
 local STATUS_REFRESH = 10
 -- Must match FINISHED_STATES in dev-server src/prompts.ts.
-local FINISHED = { deployed = true, discarded = true, answered = true, failed = true, cancelled = true }
+local FINISHED = { deployed = true, applied = true, discarded = true, answered = true, failed = true, cancelled = true }
 
 -- Short text for error codes (claude-ui.ts ERRORS); serve's own messages pass through.
 local ERRORS = {
@@ -1184,6 +1186,9 @@ function Claude.new(plugin: Plugin, toolbar: PluginToolbar, endpoint: () -> Cont
 			task.wait(if self:running() then POLL_ACTIVE else POLL_IDLE)
 		end
 	end)
+
+	-- Claude's game tools for prompts from this Studio: answered here, on the open place (Edit only).
+	StudioTools.start(self, userId)
 	return self
 end
 
@@ -1489,13 +1494,16 @@ function Claude:paintProposal(message)
 	local state = message.state
 	local pending = state == "proposed" and (proposal == nil or proposal.status == "pending")
 	if pending then
-		text = `Deploy within {math.max(1, math.ceil((expiresAt - os.time()) / 60))} min, or it is discarded`
+		text = `{if card.canApply then "Decide" else "Deploy"} within {math.max(1, math.ceil((expiresAt - os.time()) / 60))} min, or it is discarded`
 	elseif state == "building" and proposal and proposal.status == "awaiting_approval" then
 		text = `Waiting for approval on your PC{if proposal.approvalId then `  ({proposal.approvalId})` else ""}`
 	elseif state == "building" then
 		text = "Deploying..."
 	elseif state == "deployed" then
 		text = `Deployed{if message.artifactId then ` {message.artifactId}` else ""}`
+		color = COLORS.good
+	elseif state == "applied" then
+		text = "Applied to the checkout (uncommitted): Rojo syncs it"
 		color = COLORS.good
 	elseif state == "discarded" then
 		text = if proposal and proposal.status == "expired" then "Expired after 15 min: discarded" else "Discarded"
@@ -1507,7 +1515,7 @@ function Claude:paintProposal(message)
 		text = errorText((proposal and proposal.error) or message.error or "deploy failed")
 		color = COLORS.bad
 	elseif state == "lost" then
-		text = "Lost (the dev machine restarted)"
+		text = "Lost: remote-claude restarted since then"
 	end
 	card.status.Text = text
 	card.status.TextColor3 = color
@@ -1515,7 +1523,9 @@ function Claude:paintProposal(message)
 	card.buttons.Visible = pending and not card.busy
 end
 
--- A code change waiting for the dev: summary, changed files with +/- lines, Deploy and Discard.
+-- A code change waiting for the dev: summary, changed files with +/- lines, and what remote-claude offers for it:
+-- Apply (into the checkout serve's Rojo syncs; local sessions), Deploy to dev, Discard. Older remote-claude sends no
+-- list: Deploy and Discard.
 function Claude:addProposalCard(message, event)
 	if proposalCard(message) then
 		return
@@ -1531,7 +1541,11 @@ function Claude:addProposalCard(message, event)
 	stroke(frame, COLORS.accent)
 	pad(frame, 10, 12)
 	list(frame, 6)
-	local title = label(`<b>Deploy this change?</b>  {escapeRich(event.text or "")}`, COLORS.text, SMALL, true)
+	local offered = {}
+	for _, action in (event.actions or { "deploy", "discard" }) do
+		offered[action] = true
+	end
+	local title = label(`<b>{if offered.apply then "Apply this change?" else "Deploy this change?"}</b>  {escapeRich(event.text or "")}`, COLORS.text, SMALL, true)
 	title.LayoutOrder = 1
 	title.Parent = frame
 	local files = event.files or {}
@@ -1558,7 +1572,7 @@ function Claude:addProposalCard(message, event)
 	local status = label("", DIMMER, SMALL, false)
 	status.LayoutOrder = 4
 	status.Parent = frame
-	local card = { kind = "proposal", frame = frame, status = status, buttons = buttons, expiresAt = event.expiresAt or os.time() + 900, busy = false }
+	local card = { kind = "proposal", frame = frame, status = status, buttons = buttons, expiresAt = event.expiresAt or os.time() + 900, busy = false, canApply = offered.apply == true }
 	table.insert(message.segments, card)
 	local function decide(decision: string)
 		task.spawn(function()
@@ -1566,10 +1580,17 @@ function Claude:addProposalCard(message, event)
 			self:paintProposal(message)
 			local ok, reply = self:request("POST", "/tt/claude/deploy", { id = message.id, decision = decision, user = userId() })
 			card.busy = false
-			if not ok then
+			if not ok and isNotFound(reply) then
+				-- remote-claude restarted since (serve restart): it no longer knows this change
+				message.state = "lost"
+			elseif not ok then
 				self:notify(errorText(reply), COLORS.bad)
 			elseif decision == "deploy" and message.state == "proposed" then
 				message.state = "building"
+			elseif decision == "apply" and message.state == "proposed" then
+				message.state = "applied"
+			elseif decision == "discard" and message.state == "proposed" then
+				message.state = "discarded"
 			end
 			self:paintProposal(message)
 		end)
@@ -1588,8 +1609,13 @@ function Claude:addProposalCard(message, event)
 			decide(decision)
 		end)
 	end
-	button("Deploy", COLORS.accent, COLORS.dark, "deploy", 1)
-	button("Discard", COLORS.button, COLORS.bad, "discard", 2)
+	if offered.apply then
+		button("Apply", COLORS.good, COLORS.dark, "apply", 1)
+	end
+	if offered.deploy then
+		button(if offered.apply then "Deploy to dev" else "Deploy", COLORS.accent, COLORS.dark, "deploy", 2)
+	end
+	button("Discard", COLORS.button, COLORS.bad, "discard", 3)
 	self:paintProposal(message)
 end
 
