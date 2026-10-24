@@ -35,10 +35,13 @@ whole loop.
 The toolbar's **TypeTorch** button opens the dock widget (its icon follows the connection state once the icon ids in
 `Icons.luau` are set). Cards, top to bottom:
 
-- **Status**: waiting, connecting, synced, disconnected (retrying) or paused; the attached project and its ports, the
-  last sync. **Reconnect** starts over (a full resync); **Auto-connect: on/off** (per place); **Connect anyway** shows
-  when the only serve found is for another experience.
-- **Remote server**: pair with someone else's serve (below), and **Use local serve** to go back.
+- **Status**: waiting, connecting, synced, disconnected or paused; the attached project and its ports, the last sync.
+  Once a sync drops it stays **Disconnected** (red dot) with how long ago, retrying by itself, until serve is back; each
+  (re)connect rescans the hot assets and runs a quiet **Check** against that serve. **Reconnect** starts over (a full
+  resync); **Auto-connect: on/off** (per place); **Connect anyway** shows when the only serve found is for another
+  experience.
+- **Server**: which serve this Studio uses (this computer's, or a paired remote). The pairing link box is always there:
+  paste a new link and **Pair** to switch, or **Use this computer's serve** to go back from a remote.
 - **Playtest**: **Live playtest: on/off**. On, the playtest's server syncs code into the running game and the kernel
   (0.5.4+) reloads on changes, with no Stop + Play.
 - **Hot assets**: the hot assets marked in the place and what the last check found. **Add** marks the Explorer
@@ -79,13 +82,13 @@ it (cloudflared is installed when missing), then prints a one-time pairing link:
 pair` makes a new one; with `--url <tunnel>` or `--no-tunnel` the owner uses their own tunnel and `tt serve pair
 --url`).
 
-Paste the whole link into the panel's **Remote server** card and press **Pair** (or Enter). The plugin splits it on the
+Paste the whole link into the panel's **Server** card and press **Pair** (or Enter). The plugin splits it on the
 last `#`, sends the code with your Roblox user id and name to `<url>/tt/pair`, and keeps the device token it gets back
 in its settings; a bare code without a URL pairs with a `serve --remote` on this machine (`http://localhost:34890`).
 Studio then syncs from that serve (code read-only, Rojo at `<url>/r/<token>`) and the Hot assets buttons run there.
-The pairing lasts 30 days on the owner's side (`tt serve devices`, `tt serve unpair`). **Use local serve** goes back to
-the local serve (the pairing stays valid until the owner unpairs it). See the CLI's README ("A Studio on another
-machine").
+The pairing lasts 30 days on the owner's side (`tt serve devices`, `tt serve unpair`). **Use this computer's serve**
+goes back to the local serve (the pairing stays valid until the owner unpairs it). See the CLI's README ("A Studio on
+another machine").
 
 ## Claude
 
