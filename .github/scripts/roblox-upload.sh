@@ -9,7 +9,9 @@ api=https://apis.roblox.com/assets/v1
 type=${ASSET_TYPE:-Plugin}
 tmp=${RUNNER_TEMP:-$(mktemp -d)}
 
-# PATCH the asset; $1 = query string, rest = extra curl args. Waits for the operation if one comes back.
+# PATCH the asset; $1 = query string, rest = extra curl args. Waits for the operation if one comes back. Returns 2
+# when Open Cloud doesn't support this asset type for API keys yet (Plugin, as of 2026-10: "TargetType Plugin is not
+# supported yet for OpenCloudApiKey"), so the release stays green and starts uploading once Roblox adds it.
 patch() {
 	local query=$1
 	shift
@@ -18,6 +20,15 @@ patch() {
 		-H "x-api-key: $API_KEY" "$@")
 	cat "$tmp/patch.json"
 	echo
+	if [ "$code" = 400 ] && grep -q 'is not supported yet' "$tmp/patch.json"; then
+		echo "::warning::Open Cloud can't update a $type asset with an API key yet: publish TypeTorchSync.rbxm from Studio by hand"
+		if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+			printf '%s\n' "Roblox store not updated: Open Cloud doesn't take $type assets from API keys yet." \
+				"" "By hand: drag this release's TypeTorchSync.rbxm into a place, right-click it, Publish as Plugin, and overwrite asset $ASSET_ID." \
+				>>"$GITHUB_STEP_SUMMARY"
+		fi
+		return 2
+	fi
 	if [ "$code" != 200 ]; then
 		echo "::error::Open Cloud PATCH$query returned HTTP $code"
 		exit 1
@@ -44,7 +55,7 @@ patch() {
 
 # Content.
 request=$(jq -cn --arg type "$type" --arg id "$ASSET_ID" '{assetType: $type, assetId: $id}')
-patch "" -F "request=$request" -F "fileContent=@TypeTorchSync.rbxm;type=model/x-rbxm"
+patch "" -F "request=$request" -F "fileContent=@TypeTorchSync.rbxm;type=model/x-rbxm" || exit $(($? == 2 ? 0 : 1))
 echo "::notice::asset $ASSET_ID content updated to $GITHUB_REF_NAME"
 
 # Description: the store text, then version, date and what changed since the previous tag (newest first, no merges).
@@ -65,5 +76,5 @@ done
 cat "$tmp/description.txt"
 request=$(jq -cn --arg type "$type" --arg id "$ASSET_ID" --rawfile description "$tmp/description.txt" \
 	'{assetType: $type, assetId: $id, description: ($description | rtrimstr("\n"))}')
-patch "?updateMask=description" -F "request=$request"
+patch "?updateMask=description" -F "request=$request" || exit $(($? == 2 ? 0 : 1))
 echo "::notice::asset $ASSET_ID description updated"

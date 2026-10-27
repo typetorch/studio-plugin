@@ -26,7 +26,7 @@ local Panel = require(script.Parent.Panel)
 
 local App = {}
 
-local VERSION = "0.6.0"
+local VERSION = "0.7.0"
 local PROBE_SECONDS = 2
 local HEARTBEAT_SECONDS = 5
 local STATUS_SECONDS = 3

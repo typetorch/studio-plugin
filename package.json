@@ -1,6 +1,6 @@
 {
 	"name": "@typetorch/studio-plugin",
-	"version": "0.6.1",
+	"version": "0.7.0",
 	"private": true,
 	"description": "TypeTorch Studio plugin: attaches Roblox Studio to `typetorch serve` by itself (sync, agent commands, live playtest, hot assets).",
 	"license": "MIT AND MPL-2.0",

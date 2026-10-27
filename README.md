@@ -2,45 +2,121 @@
 
 # TypeTorch Studio plugin
 
-Attaches Roblox Studio to [`typetorch serve`](https://github.com/typetorch/cli) by itself and keeps it synced: no
-Connect button, no reconnecting by hand. It also lets an agent drive Studio (reconnect, play, stop, Output), pushes code
-into a running playtest (kernel 0.5.4+), and publishes hot assets from a panel: select a model or UI, **Add**, then
-**Publish to dev**, with no place publish first.
+Attaches Roblox Studio to [`typetorch serve`](https://github.com/typetorch/cli) (`tt serve`) by itself and keeps it
+synced: no Connect button, no reconnecting by hand. It also lets an agent drive Studio (reconnect, play, stop, Output),
+pushes code into a running playtest (kernel 0.5.4+), publishes hot assets from a panel (select a model or UI, **Add**,
+then **Publish to dev**, with no place publish first), pairs with someone else's serve over the internet, and has a
+**Claude** window that prompts Claude Code on the serve machine.
 
 ## Install
-#### Asset Store
-Can be found on [Roblox Asset Store](https://create.roblox.com/store/asset/135066807179101/TypeTorch)
 
-#### Local Plugin from GitHub
+#### GitHub release
+
 Download `TypeTorchSync.rbxm` from the [latest release](https://github.com/typetorch/studio-plugin/releases/latest)
-into Studio's plugins folder (Windows: `%LOCALAPPDATA%\Roblox\Plugins`), then restart Studio (or reload plugins).
-From a checkout of this repo instead: `rojo build default.project.json --plugin TypeTorchSync.rbxm` (or
-`typetorch studio install-plugin --from <this folder>`). The plugin is not on npm. Then run `typetorch serve` in the game folder: the plugin
-finds it. The CLI's README ("Studio: typetorch serve") describes the whole loop.
+into Studio's plugins folder (Windows: `%LOCALAPPDATA%\Roblox\Plugins`, macOS: `~/Documents/Roblox/Plugins`), then
+restart Studio (or reload plugins). Releases are the main channel: every version lands there first.
+
+#### Creator Store
+
+The plugin is also on the [Creator Store](https://create.roblox.com/store/asset/135066807179101/TypeTorch). That copy is
+updated by hand (see Releasing), so it can lag behind the latest GitHub release.
+
+#### From a checkout
+
+`rojo build default.project.json --plugin TypeTorchSync.rbxm` (`npm run install-plugin`; `npm run build` writes
+`TypeTorchSync.rbxm` to the repo instead), or `tt studio install-plugin --from <this folder>`. The plugin is not on
+npm.
+
+Then run `tt serve` in the game folder: the plugin finds it. The CLI's README ("Studio: typetorch serve") describes the
+whole loop.
+
+## The panel
+
+The toolbar's **TypeTorch** button opens the dock widget (its icon follows the connection state once the icon ids in
+`Icons.luau` are set). Cards, top to bottom:
+
+- **Status**: waiting, connecting, synced, disconnected (retrying) or paused; the attached project and its ports, the
+  last sync. **Reconnect** starts over (a full resync); **Auto-connect: on/off** (per place); **Connect anyway** shows
+  when the only serve found is for another experience.
+- **Remote server**: pair with someone else's serve (below), and **Use local serve** to go back.
+- **Playtest**: **Live playtest: on/off**. On, the playtest's server syncs code into the running game and the kernel
+  (0.5.4+) reloads on changes, with no Stop + Play.
+- **Hot assets**: the hot assets marked in the place and what the last check found. **Add** marks the Explorer
+  selection (the name box sets the key; with one hot asset selected, a new name turns Add into **Rename**), **Remove**
+  unmarks it. **Check** compares the place with the lockfile, **Upload** uploads new and changed assets, **Publish to
+  dev** (named after the lockfile's dev branch) uploads and deploys them to that branch. Each button shows only when it
+  has work; they send the open place's export to serve as a job.
+- **Compile**: the last compile result and its first errors.
+- **typetorch serve**: serve's child processes and their restarts.
+
+In Play the toolbar and windows stay (on the client in Play, the server in Run); a playtest's panel shows only status,
+playtest and compile, since pairing and hot assets act on the edit session.
 
 ## Releasing
 
-`npm version <x.y.z> -m "release %s" && git push origin main --follow-tags`. The tag runs `.github/workflows/release.yml`
-(nothing else does: no PR or branch runs): it builds `TypeTorchSync.rbxm`, publishes the GitHub release, and for a
-stable version (no `-rc`) updates the plugin's Roblox asset through Open Cloud: the rbxm, then the description
-(`.github/store-description.txt` plus the version, the date and the commits since the previous tag). That last job reads only the GitHub
-environment `roblox`: secret `ROBLOX_API_KEY` (an Open Cloud key with the **Assets** API, Read + Write, owned by the
-asset's creator), variable `ROBLOX_PLUGIN_ASSET_ID`. Without them it skips.
+`npm version <x.y.z> -m "release %s" && git push origin main --follow-tags`, after setting `VERSION` in
+`src/TypeTorch/App.luau` (the version the panel shows) to the same number. The tag runs
+`.github/workflows/release.yml` (nothing else does: no PR or branch runs): it checks the tag against `package.json`,
+builds `TypeTorchSync.rbxm` with the Rojo that `rokit.toml` pins, and publishes the GitHub release with the rbxm
+attached (a version with `-`, like `-rc.1`, is a prerelease).
+
+For a stable version the `roblox` job then tries to update the Creator Store asset through Open Cloud
+(`.github/scripts/roblox-upload.sh`): the rbxm, then the description (`.github/store-description.txt` plus the version,
+the date and the commits since the previous tag). It reads only the GitHub environment `roblox`: secret
+`ROBLOX_API_KEY` (an Open Cloud key with the **Assets** API, Read + Write, owned by the asset's creator), variable
+`ROBLOX_PLUGIN_ASSET_ID`. Without them it skips with a notice.
+
+Open Cloud doesn't take Plugin assets from API keys yet ("TargetType Plugin is not supported yet"), so today that job
+only warns, writes the manual steps to the run summary and stays green. **Publishing to Roblox is manual**: download the
+release's `TypeTorchSync.rbxm`, drag it into a place in Studio, right-click it in the Explorer, **Publish as Plugin**,
+and overwrite the existing asset (135066807179101). The job starts uploading by itself once Roblox supports it.
 
 ## Working with someone else's serve
 
-The owner runs `typetorch serve --remote` and points a tunnel at it (Cloudflare Tunnel: `service:
-http://localhost:34890`), then `typetorch serve pair` for a one-time code. In the panel's **Remote server** card, enter
-the tunnel URL and the code and press **Pair**; Studio then syncs from that serve (code read-only) and the Hot assets
-buttons run there. **Use local serve** goes back. See the CLI's README ("A Studio on another machine").
+The owner runs `tt serve --remote`. serve opens a gateway on `localhost:34890` and a free Cloudflare quick tunnel to
+it (cloudflared is installed when missing), then prints a one-time pairing link: the tunnel URL with the code after a
+`#`, like `https://<name>.trycloudflare.com#<code>`, valid 15 minutes (`tt serve status` shows it again, `tt serve
+pair` makes a new one; with `--url <tunnel>` or `--no-tunnel` the owner uses their own tunnel and `tt serve pair
+--url`).
+
+Paste the whole link into the panel's **Remote server** card and press **Pair** (or Enter). The plugin splits it on the
+last `#`, sends the code with your Roblox user id and name to `<url>/tt/pair`, and keeps the device token it gets back
+in its settings; a bare code without a URL pairs with a `serve --remote` on this machine (`http://localhost:34890`).
+Studio then syncs from that serve (code read-only, Rojo at `<url>/r/<token>`) and the Hot assets buttons run there.
+The pairing lasts 30 days on the owner's side (`tt serve devices`, `tt serve unpair`). **Use local serve** goes back to
+the local serve (the pairing stays valid until the owner unpairs it). See the CLI's README ("A Studio on another
+machine").
 
 ## Claude
 
-The toolbar's **Claude** button opens a chat with Claude Code on the machine that runs `typetorch serve --claude`
-(remote-claude from `@typetorch/dev-server`), like the in-game DEV > Claude tab: it edits that serve's dev branch, and
-when it's done you choose **Deploy** or **Discard**. It works with a local serve and with a paired remote one (pair
-again after updating the plugin, so serve knows your Roblox user; the owner adds your user id with
-`--claude-users`). Claude acting inside Studio itself isn't there yet.
+The toolbar's **Claude** button opens a chat with Claude Code on the machine that runs `tt serve --claude`
+(remote-claude from `@typetorch/dev-server`), a port of the in-game DEV > Claude tab. It works with a local serve and
+with a paired remote one, through serve's `/tt/claude/...` routes; replies stream over serve's WebSocket
+(`/tt/claude/stream`), with HTTP polling while there is no stream. Only allowed Roblox users can prompt: serve's
+`--claude-users <ids>`, by default the owners in `typetorch.json`. A remote Studio prompts as the user it paired with,
+so the owner adds a helper's id there (pair again after updating the plugin, so serve knows your user). Each dev has
+their own worktree on the serve machine, so several devs can use it at once.
+
+- **Code mode from Studio**: Claude edits a copy of the serve machine's branch. The Live / Code pill shows the mode;
+  Live (game tools on a running server) works from the in-game tab.
+- **The open place**: Claude can read it (`inspect`, `find`, Studio output, status) and change it with Luau snippets
+  that run in this Studio's Edit DataModel at once, each one undo step (Ctrl+Z); the code shows in the chat. Only
+  prompts sent from this chat are answered (`src/TypeTorch/StudioTools.luau`). Save or publish the place to keep the
+  changes.
+- **"+" menu** for the next message: **Dex path** (the Studio selection), **My logs** (this DataModel's Output),
+  **Server logs** and **Screenshot** (in Play only), **Toolbox** (Creator Store tools for that message only).
+- **New chat**; tap the status line for recent chats; the copy icon on a reply selects its Markdown for Ctrl+C. Images
+  Claude shows are drawn in the chat. The chat is kept on serve per user, so it follows you between Edit and Play.
+- **Apply this change?** When a run changed files, remote-claude commits them and the reply ends in a card with the
+  summary and the changed files (+/- lines):
+  - **Apply** (green) puts the change into the checkout serve's Rojo syncs to Studio, uncommitted, so you review and
+    commit it there. A change to lines that changed there too is refused and the checkout is left as it was.
+  - **Deploy to dev** runs `typetorch deploy` of that commit to the dev branch; the card shows "Deploying...",
+    "Waiting for approval on your PC" when the deploy needs the owner's approval, then "Deployed" with the build id
+    (or why it failed). Running dev servers hot-swap to it.
+  - **Discard** drops the commit.
+  - With no answer in 15 minutes the change is discarded. Only the user who sent the prompt can decide. A card whose
+    change was lost to a restart of serve or remote-claude says so.
 
 ## Layout
 
@@ -62,11 +138,13 @@ The control API's contract is `src/serve/protocol.ts` in typetorch/cli; the two 
   lockfile reaches serve. A check's answer (CLI 0.12.2+) carries a diff per new, changed or removed asset:
   `Assets.describeDiff` turns it into the lines behind each row's **Diff** button (instances added, removed, changed
   with old and new property values; an older serve sends none and the button stays hidden).
-- `src/TypeTorch/Icons.luau`: the toolbar button's icon per connection state (gray waiting, amber connecting, green
-  synced, red disconnected): `rbxassetid://<id>` of each image, once the TypeTorch icon set is picked and uploaded.
-  An empty id keeps Studio's default icon.
+- `src/TypeTorch/Icons.luau`: the toolbar icons as `rbxassetid://<id>`: the TypeTorch button's per connection state
+  (gray waiting, amber connecting, green synced, red disconnected) and the Claude button's. Their PNGs are in
+  `assets/icons/`; `bun scripts/upload-icons.ts --user <id> [--env-file <game repo>/.env]` (or `--group <id>`) uploads
+  them as Images with an Open Cloud assets key and fills the ids in. An empty id keeps Studio's default icon.
 - `src/TypeTorch/Panel.luau`, `Widgets.luau`: the dock widget, in the TypeTorch dev menu's look.
 - `src/TypeTorch/Claude.luau`: the Claude window (`/tt/claude/...` on serve, which talks to remote-claude).
+- `src/TypeTorch/StudioTools.luau`: Claude's game tools on the open place, for prompts from this chat (Edit only).
 - `src/TypeTorch/Control.luau`: the control API client (cli `src/serve/protocol.ts` is the contract): a local port, or
   a paired remote serve (its URL plus a device token; Rojo at `<url>/r/<token>`).
 - `vendor/rojo/`: Rojo's plugin core, unchanged except where marked.
