@@ -359,4 +359,86 @@ function Assets.describeJob(job): string
 	return text
 end
 
+function Assets.formatBytes(n: number): string
+	if n < 1024 then
+		return `{n} B`
+	elseif n < 1024 * 1024 then
+		return `{string.format("%.1f", n / 1024)} KB`
+	end
+	return `{string.format("%.1f", n / (1024 * 1024))} MB`
+end
+
+local function summaryText(summary): string
+	local text = `{summary.instances} instance{if summary.instances == 1 then "" else "s"}, {Assets.formatBytes(summary.bytes)}`
+	local classes = {}
+	for className, count in summary.classes or {} do
+		table.insert(classes, { className, count })
+	end
+	table.sort(classes, function(a, b)
+		return if a[2] ~= b[2] then a[2] > b[2] else a[1] < b[1]
+	end)
+	local parts = {}
+	for _, pair in classes do
+		table.insert(parts, `{pair[1]} x{pair[2]}`)
+	end
+	return if #parts > 0 then `{text}: {table.concat(parts, ", ")}` else text
+end
+
+export type DiffLine = { text: string, tone: "added" | "removed" | "changed" | "text" | "dim" }
+
+-- The panel's lines for one checked asset's `diff` (cli `assets status --json`, src/assetdiff.ts): the instances
+-- added, removed and changed with their properties, already bounded by serve. `status`: the change's status
+-- ("added", "updated", "removed"). An older serve sends no diff: callers hide the button then.
+function Assets.describeDiff(diff, status: string): { DiffLine }
+	local lines: { DiffLine } = {}
+	local function line(text: string, tone)
+		table.insert(lines, { text = text, tone = tone or "text" })
+	end
+	local before, after = diff.before, diff.after
+	if status == "added" then
+		line(if after then `New: {summaryText(after)}` else "New asset", "dim")
+		return lines
+	elseif status == "removed" then
+		line(if before then `Was {summaryText(before)}; not in the place any more` else "Not in the place any more", "dim")
+		return lines
+	end
+	if diff.baseline ~= "state" or not before or not after then
+		if type(diff.note) == "string" then
+			line(diff.note, "dim")
+		end
+		if after then
+			line(`Now {summaryText(after)}`, "dim")
+		end
+		return lines
+	end
+	line(`{before.instances} -> {after.instances} instances, {Assets.formatBytes(before.bytes)} -> {Assets.formatBytes(after.bytes)}`, "dim")
+	for _, entry in diff.entries or {} do
+		if entry.kind == "added" then
+			line(`+ {entry.path}  {entry.className}`, "added")
+		elseif entry.kind == "removed" then
+			line(`- {entry.path}  {entry.className}`, "removed")
+		else
+			line(`~ {entry.path}  {entry.className}`, "changed")
+			for _, prop in entry.props or {} do
+				local from = if prop.from ~= nil then tostring(prop.from) else "(none)"
+				local to = if prop.to ~= nil then tostring(prop.to) else "(removed)"
+				line(`    {prop.name}: {from} -> {to}`, "text")
+			end
+			if (entry.moreProps or 0) > 0 then
+				line(`    and {entry.moreProps} more propert{if entry.moreProps == 1 then "y" else "ies"}`, "dim")
+			end
+		end
+	end
+	if (diff.more or 0) > 0 then
+		line(`and {diff.more} more instance{if diff.more == 1 then "" else "s"}`, "dim")
+	end
+	if type(diff.undecoded) == "table" and #diff.undecoded > 0 then
+		line(`Also changed (not decoded): {table.concat(diff.undecoded, ", ")}`, "dim")
+	end
+	if type(diff.note) == "string" then
+		line(diff.note, "dim")
+	end
+	return lines
+end
+
 return Assets
