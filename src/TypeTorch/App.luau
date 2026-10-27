@@ -351,7 +351,7 @@ local function refreshAssets()
 		state.assets.lock = if ok then lock else nil
 	end
 	-- The lockfile's entries as one string (keys and hashes), so the automatic check notices a sync or a commit that
-	-- moved the lockfile under it. A serve older than 0.12.2 sends no hashes: the keys alone still count.
+	-- moved the lockfile under it. A serve older than 0.15.0 sends no hashes: the keys alone still count.
 	local parts = {}
 	local lock = state.assets.lock
 	if lock and type(lock.assets) == "table" then
@@ -410,7 +410,7 @@ local function rememberChanges(job)
 		if type(change) == "table" and type(change.key) == "string" then
 			-- after an upload everything it sent is up to date
 			byKey[change.key] = if result.dryRun or change.error then change.status else "unchanged"
-			-- a check's diff per key (cli 0.12.2+; an older serve sends none, and the panel shows no Diff button)
+			-- a check's diff per key (cli 0.15.0+; an older serve sends none, and the panel shows no Diff button)
 			if result.dryRun and type(change.diff) == "table" then
 				diffs[change.key] = change.diff
 			end

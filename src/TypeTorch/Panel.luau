@@ -140,7 +140,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	self.assetsCard = assetsCard
 	Widgets.line(assetsCard, "Hot assets", 15, COLORS.text, Enum.Font.BuilderSansBold)
 	self.assetsSummary = Widgets.line(assetsCard, "", 14, COLORS.dim)
-	-- One row per hot asset: its line, and a Diff button when the last check sent what changed in it (cli 0.12.2+).
+	-- One row per hot asset: its line, and a Diff button when the last check sent what changed in it (cli 0.15.0+).
 	-- The button opens the diff view under the rows for that key (again to close).
 	self.assetRows = {}
 	self.rowKeys = {}
