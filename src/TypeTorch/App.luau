@@ -65,8 +65,23 @@ local state = {
 	patches = 0,
 	backoff = 1,
 	status = nil, -- the last GET /tt/status (compile state, children)
-	-- The Hot assets card: what the place marks (scanned here), what the lockfile knows (GET /tt/assets), the last job.
-	assets = { marked = {}, scanned = false, lock = nil, changes = nil, message = "", job = nil, jobText = "" },
+	-- The Hot assets card: what the place marks (scanned here), what the lockfile knows (GET /tt/assets), the last job,
+	-- the last check's per-key diffs (the Diff button), and what the automatic check compares against: the export it
+	-- last sent (`lastExport`: its bytes and the lockfile's hashes then), so an unchanged place costs no job.
+	assets = {
+		marked = {},
+		scanned = false,
+		lock = nil,
+		lockSig = "",
+		changes = nil,
+		diffs = {},
+		message = "",
+		job = nil,
+		jobText = "",
+		checkedAt = nil :: number?,
+		lastCheckClock = nil :: number?,
+		lastExport = nil,
+	},
 	wake = nil :: thread?,
 	remoteMessage = "",
 }
@@ -315,6 +330,17 @@ local function refreshAssets()
 		local ok, lock = Control.request(state.server.port, "GET", "/tt/assets")
 		state.assets.lock = if ok then lock else nil
 	end
+	-- The lockfile's entries as one string (keys and hashes), so the automatic check notices a sync or a commit that
+	-- moved the lockfile under it. A serve older than 0.12.2 sends no hashes: the keys alone still count.
+	local parts = {}
+	local lock = state.assets.lock
+	if lock and type(lock.assets) == "table" then
+		for key, entry in lock.assets do
+			table.insert(parts, `{key}={if type(entry) == "table" and entry.hash then entry.hash else "?"}`)
+		end
+	end
+	table.sort(parts)
+	state.assets.lockSig = table.concat(parts, ";")
 end
 
 local function statusLoop()
@@ -348,13 +374,19 @@ local function rememberChanges(job)
 		return
 	end
 	local byKey = {}
+	local diffs = {}
 	for _, change in result.changes do
 		if type(change) == "table" and type(change.key) == "string" then
 			-- after an upload everything it sent is up to date
 			byKey[change.key] = if result.dryRun or change.error then change.status else "unchanged"
+			-- a check's diff per key (cli 0.12.2+; an older serve sends none, and the panel shows no Diff button)
+			if result.dryRun and type(change.diff) == "table" then
+				diffs[change.key] = change.diff
+			end
 		end
 	end
 	state.assets.changes = byKey
+	state.assets.diffs = diffs
 end
 
 function App.addSelection(name: string)
@@ -373,9 +405,21 @@ function App.removeSelection()
 	end
 end
 
+-- What the automatic check compares between two exports: the serialized assets and each one's key, parent path,
+-- name and class (a moved asset keeps its bytes but changes the lockfile's path).
+local function exportSig(export): string
+	local parts = {}
+	for _, meta in export.assets do
+		table.insert(parts, `{meta.key}:{table.concat(meta.path, "/")}/{meta.name}:{meta.className}`)
+	end
+	return `{export.binary}|{table.concat(parts, ";")}`
+end
+
 -- Exports the place's hot assets and runs a job on them in typetorch serve, following it until it ends. `quiet`: an
--- automatic check (no message when serve isn't there).
-function App.runJob(kind: string, quiet: boolean?)
+-- automatic check (no message when serve isn't there). `auto`: the timed check: a problem in the place is skipped
+-- silently (the card already shows it), and an export equal to the last check's, with the lockfile unchanged, is
+-- counted as checked without a job.
+function App.runJob(kind: string, quiet: boolean?, auto: boolean?)
 	local server = state.server
 	if not server then
 		if not quiet then
@@ -386,12 +430,26 @@ function App.runJob(kind: string, quiet: boolean?)
 	if state.assets.job and state.assets.job.state == "running" then
 		return
 	end
-	state.assets.jobText = "Exporting from this place"
-	render()
+	local check = kind == "assets-status"
+	if check then
+		state.assets.lastCheckClock = os.clock()
+	end
+	if not auto then
+		state.assets.jobText = "Exporting from this place"
+		render()
+	end
 	local exported, export = Assets.export()
 	if not exported then
-		state.assets.jobText = ""
-		assetsMessage(export)
+		if not auto then
+			state.assets.jobText = ""
+			assetsMessage(export)
+		end
+		return
+	end
+	local last = state.assets.lastExport
+	if auto and last and last.sig == exportSig(export) and last.lockSig == state.assets.lockSig then
+		state.assets.checkedAt = os.time()
+		render()
 		return
 	end
 	if not quiet then
@@ -421,8 +479,41 @@ function App.runJob(kind: string, quiet: boolean?)
 			rememberChanges(job)
 		end
 		refreshAssets()
+		if check and job.state == "done" then
+			-- the next automatic check skips its job while the place and the lockfile stay as they are now
+			state.assets.checkedAt = os.time()
+			state.assets.lastExport = { sig = exportSig(export), lockSig = state.assets.lockSig }
+		elseif not check then
+			state.assets.lastExport = nil
+		end
 		render()
 	end)
+end
+
+-- The timed check (AUTO_CHECK_SECONDS after the last one started): only with the panel open in edit mode, serve
+-- attached, hot assets marked and no job running; it never queues (one loop, and a running job is skipped). Most
+-- rounds end at the export comparison in runJob and never reach serve.
+local AUTO_CHECK_SECONDS = 30
+
+local function autoCheckLoop()
+	while state.plugin do
+		task.wait(1)
+		local assets = state.assets
+		local due = assets.lastCheckClock == nil or os.clock() - assets.lastCheckClock >= AUTO_CHECK_SECONDS
+		if
+			due
+			and panel
+			and panel:isOpen()
+			and state.mode == "edit"
+			and state.server ~= nil
+			and state.phase ~= "confirm"
+			and assets.scanned
+			and #assets.marked > 0
+			and not (assets.job and assets.job.state == "running")
+		then
+			App.runJob("assets-status", true, true)
+		end
+	end
 end
 
 -- Drops the connection and starts over (a full resync).
@@ -746,6 +837,7 @@ function App.start(plugin: Plugin)
 	render()
 	task.spawn(loop)
 	task.spawn(statusLoop)
+	task.spawn(autoCheckLoop)
 	startAgent()
 end
 

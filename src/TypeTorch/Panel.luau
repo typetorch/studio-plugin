@@ -29,6 +29,10 @@ local PHASES = {
 
 local MAX_ERRORS = 8
 local MAX_ASSET_LINES = 12
+local MAX_DIFF_LINES = 40
+
+-- A diff line's tone (Assets.describeDiff) to its color.
+local DIFF_TONES = { added = COLORS.good, removed = COLORS.bad, changed = COLORS.warn, text = COLORS.text, dim = COLORS.dim }
 
 local function ago(t: number?): string
 	if not t then
@@ -128,11 +132,33 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	self.assetsCard = assetsCard
 	Widgets.line(assetsCard, "Hot assets", 15, COLORS.text, Enum.Font.BuilderSansBold)
 	self.assetsSummary = Widgets.line(assetsCard, "", 14, COLORS.dim)
-	self.assetLines = {}
+	-- One row per hot asset: its line, and a Diff button when the last check sent what changed in it (cli 0.12.2+).
+	-- The button opens the diff view under the rows for that key (again to close).
+	self.assetRows = {}
+	self.rowKeys = {}
+	self.diffKey = nil
 	for i = 1, MAX_ASSET_LINES do
-		local label = Widgets.line(assetsCard, "", 14, COLORS.text, Enum.Font.RobotoMono)
+		local row = Widgets.inlineRow(assetsCard)
+		row.Visible = false
+		local label = Widgets.line(row, "", 14, COLORS.text, Enum.Font.RobotoMono)
+		local button = Widgets.smallButton(row, "Diff", function()
+			local key = self.rowKeys[i]
+			self.diffKey = if self.diffKey == key then nil else key
+			if self.lastState then
+				self:renderAssets(self.lastState)
+			end
+		end)
+		self.assetRows[i] = { row = row, label = label, button = button }
+	end
+	local diffPanel = Widgets.subPanel(assetsCard)
+	diffPanel.Visible = false
+	self.diffPanel = diffPanel
+	self.diffTitle = Widgets.line(diffPanel, "", 14, COLORS.text, Enum.Font.BuilderSansBold)
+	self.diffLines = {}
+	for i = 1, MAX_DIFF_LINES do
+		local label = Widgets.line(diffPanel, "", 14, COLORS.text, Enum.Font.RobotoMono)
 		label.Visible = false
-		self.assetLines[i] = label
+		self.diffLines[i] = label
 	end
 	-- Add and Remove follow the Explorer selection; Check, Upload and Publish show only when they have work.
 	self.selectionHint = Widgets.line(assetsCard, "Select a model or UI in the Explorer to add it", 14, COLORS.dim)
@@ -160,6 +186,7 @@ function Panel.new(plugin: Plugin, actions, version: string)
 		actions.runJob("assets-deploy-dev")
 	end, COLORS.accent)
 	self.deployButton.TextColor3 = COLORS.dark
+	self.checkedLine = Widgets.line(assetsCard, "", 14, COLORS.dim)
 	self.assetsMessage = Widgets.line(assetsCard, "", 14, COLORS.dim)
 	self.jobLine = Widgets.line(assetsCard, "", 14, COLORS.dim)
 	game:GetService("Selection").SelectionChanged:Connect(function()
@@ -298,6 +325,8 @@ function Panel:renderAssets(state)
 	-- Problems first, then what Publish would send, then the rest. The last check (state.assets.changes) knows what
 	-- changed; without one, a key the lockfile doesn't have is new.
 	local changes = assets.changes or {}
+	local diffs = assets.diffs or {}
+	-- { text, color, key (a row with a Diff button when the last check sent that key's diff), status }
 	local rows = {}
 	for _, entry in assets.marked do
 		if #entry.problems > 0 then
@@ -313,10 +342,10 @@ function Panel:renderAssets(state)
 			local status = changes[entry.key] or (if inLock[entry.key] then nil else "added")
 			if status == "added" then
 				pending += 1
-				table.insert(rows, { `{entry.key}  {entry.className}  new`, COLORS.warn })
+				table.insert(rows, { `{entry.key}  {entry.className}  new`, COLORS.warn, entry.key, status })
 			elseif status == "updated" then
 				pending += 1
-				table.insert(rows, { `{entry.key}  {entry.className}  changed`, COLORS.warn })
+				table.insert(rows, { `{entry.key}  {entry.className}  changed`, COLORS.warn, entry.key, status })
 			else
 				table.insert(later, { `{entry.key}  {entry.className}  {if status == "unchanged" then "up to date" else "published"}`, COLORS.text })
 			end
@@ -325,19 +354,46 @@ function Panel:renderAssets(state)
 	for key in inLock do
 		if not present[key] and assets.scanned then
 			pending += 1
-			table.insert(rows, { `{key}  removed (Publish drops it)`, COLORS.dim })
+			table.insert(rows, { `{key}  removed (Publish drops it)`, COLORS.dim, key, "removed" })
 		end
 	end
 	for _, row in later do
 		table.insert(rows, row)
 	end
-	for i, label in self.assetLines do
+	local shown = nil
+	for i, parts in self.assetRows do
 		local row = rows[i]
-		label.Visible = row ~= nil
+		local overflow = i == MAX_ASSET_LINES and #rows > MAX_ASSET_LINES
+		parts.row.Visible = row ~= nil
+		local key = if row and not overflow and diffs[row[3]] then row[3] else nil
+		self.rowKeys[i] = key
 		if row then
-			label.Text = if i == MAX_ASSET_LINES and #rows > MAX_ASSET_LINES then `and {#rows - i + 1} more` else row[1]
-			label.TextColor3 = row[2]
+			parts.label.Text = if overflow then `and {#rows - i + 1} more` else row[1]
+			parts.label.TextColor3 = row[2]
+			parts.button.Visible = key ~= nil
+			parts.label.Size = if key then UDim2.new(1, -Widgets.SMALL_BUTTON_WIDTH - 8, 0, 0) else UDim2.new(1, 0, 0, 0)
+			parts.button.BackgroundColor3 = if key == self.diffKey then COLORS.stroke else COLORS.button
+			if key and key == self.diffKey then
+				shown = { key = key, status = row[4] }
+			end
 		end
+	end
+	-- The diff view: the open key's lines (Assets.describeDiff), while that key still has a diff.
+	self.diffPanel.Visible = shown ~= nil
+	if shown then
+		self.diffTitle.Text = `{shown.key}: {if shown.status == "added" then "new" elseif shown.status == "removed" then "removed" else "what changed"}`
+		local lines = Assets.describeDiff(diffs[shown.key], shown.status)
+		for i, label in self.diffLines do
+			local line = lines[i]
+			local overflow = i == MAX_DIFF_LINES and #lines > MAX_DIFF_LINES
+			label.Visible = line ~= nil
+			if line then
+				label.Text = if overflow then `and {#lines - i + 1} more lines` else line.text
+				label.TextColor3 = if overflow then COLORS.dim else DIFF_TONES[line.tone] or COLORS.text
+			end
+		end
+	else
+		self.diffKey = nil
 	end
 	-- Add: something selected that isn't a hot asset yet, or one hot asset to rename from the name box. Remove: a
 	-- selected hot asset.
@@ -371,6 +427,11 @@ function Panel:renderAssets(state)
 	self.deployButton.Visible = self.uploadButton.Visible
 	self.syncButtons.Visible = self.checkButton.Visible or self.deployButton.Visible
 	self.deployButton.Text = `Publish to {if lock and lock.devBranch then lock.devBranch else "dev"}`
+	-- When the last check ran (a button, or the automatic one every 30 s while this panel is open and serve attached).
+	self.checkedLine.Visible = assets.checkedAt ~= nil
+	if assets.checkedAt then
+		self.checkedLine.Text = `Checked {ago(assets.checkedAt)}{if idle and #assets.marked > 0 then ", checks again every 30 s" else ""}`
+	end
 	self.assetsMessage.Text = assets.message
 	self.assetsMessage.Visible = assets.message ~= ""
 	self.jobLine.Text = assets.jobText

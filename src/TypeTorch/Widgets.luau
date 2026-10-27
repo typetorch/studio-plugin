@@ -242,6 +242,54 @@ function Widgets.buttonRow(parent: Instance): Frame
 	return row
 end
 
+Widgets.SMALL_BUTTON_WIDTH = 52
+
+-- A full-width row that lays its children out left to right (a line with a small button after it).
+function Widgets.inlineRow(parent: Instance): Frame
+	local row = make("Frame", {
+		BackgroundTransparency = 1,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = nextOrder(parent),
+	}, parent)
+	make("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		VerticalAlignment = Enum.VerticalAlignment.Top,
+		Padding = UDim.new(0, 8),
+	}, row)
+	return row
+end
+
+-- A small fixed-width button (SMALL_BUTTON_WIDTH x 24) for a row: the same look as `button`, a size for a line.
+function Widgets.smallButton(row: Instance, text: string, onClick: () -> ()): TextButton
+	local button = Widgets.style(make("TextButton", { AutoButtonColor = true }), text, 14, COLORS.text, Enum.Font.BuilderSansMedium)
+	button.TextXAlignment = Enum.TextXAlignment.Center
+	button.TextWrapped = false
+	button.BackgroundColor3 = COLORS.button
+	button.Size = UDim2.fromOffset(Widgets.SMALL_BUTTON_WIDTH, 24)
+	button.LayoutOrder = nextOrder(row)
+	Widgets.corner(button, 6)
+	button.Parent = row
+	button.Activated:Connect(onClick)
+	return button
+end
+
+-- A darker panel inside a card (the diff view), with a vertical list inside.
+function Widgets.subPanel(parent: Instance): Frame
+	local frame = make("Frame", {
+		BackgroundColor3 = COLORS.window,
+		BorderSizePixel = 0,
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		LayoutOrder = nextOrder(parent),
+	}, parent)
+	Widgets.corner(frame, 6)
+	Widgets.pad(frame, 8, 10)
+	Widgets.verticalList(frame, 4)
+	return frame
+end
+
 -- A status dot (a Frame, no glyphs) next to a label; returns both.
 function Widgets.statusLine(parent: Instance): (Frame, TextLabel)
 	local row = make("Frame", {
