@@ -22,7 +22,7 @@ local PHASES = {
 	confirm = { "Found a server for another place", COLORS.warn, Icons.connecting },
 	connecting = { "Connecting", COLORS.warn, Icons.connecting },
 	connected = { "Synced", COLORS.good, Icons.synced },
-	disconnected = { "Disconnected, retrying", COLORS.bad, Icons.error },
+	disconnected = { "Disconnected", COLORS.bad, Icons.error },
 	paused = { "Paused", COLORS.dim, Icons.idle },
 	idle = { "Playtest", COLORS.dim, Icons.idle },
 }
@@ -98,24 +98,32 @@ function Panel.new(plugin: Plugin, actions, version: string)
 	end, COLORS.accent)
 	self.confirmButton.TextColor3 = COLORS.dark
 
-	-- Remote card: a typetorch serve on another machine (`serve --remote` behind the owner's tunnel)
+	-- Server card: which serve this Studio uses (this computer's, or a `serve --remote` behind the owner's tunnel). The
+	-- link box is always there: pasting a new link switches servers from either side.
 	local remoteCard = Widgets.card(scroll)
 	self.remoteCard = remoteCard
-	Widgets.line(remoteCard, "Remote server", 15, COLORS.text, Enum.Font.BuilderSansBold)
-	self.remoteLine = Widgets.line(remoteCard, "", 14, COLORS.dim)
-	self.remoteLink = Widgets.textBox(remoteCard, "pairing link, e.g. https://serve.example.com#code")
+	Widgets.line(remoteCard, "Server", 15, COLORS.text, Enum.Font.BuilderSansBold)
+	self.remoteLine = Widgets.line(remoteCard, "", 14, COLORS.text)
+	self.remoteLink = Widgets.textBox(remoteCard, "")
+	local function pair()
+		local link = self.remoteLink.Text
+		if Control.trimUrl(link) == "" then
+			self.remoteLink:CaptureFocus()
+			return
+		end
+		actions.pairRemote(link)
+	end
 	self.remoteLink.FocusLost:Connect(function(enterPressed)
 		if enterPressed then
-			actions.pairRemote(self.remoteLink.Text)
+			pair()
 		end
 	end)
 	local remoteButtons = Widgets.buttonRow(remoteCard)
-	self.pairButton = Widgets.button(remoteButtons, "Pair", function()
-		actions.pairRemote(self.remoteLink.Text)
-	end)
-	self.localButton = Widgets.button(remoteButtons, "Use local serve", function()
+	self.pairButton = Widgets.button(remoteButtons, "Pair", pair)
+	self.localButton = Widgets.button(remoteButtons, "Use this computer's serve", function()
 		actions.forgetRemote()
 	end)
+	self.remoteHint = Widgets.line(remoteCard, "", 14, COLORS.dim)
 	self.remoteMessage = Widgets.line(remoteCard, "", 14, COLORS.dim)
 
 	-- Playtest card
@@ -235,10 +243,15 @@ function Panel:render(state)
 		self.project.Text = `{server.hello.project} at {server.port.url}`
 	elseif server then
 		self.project.Text = `{server.hello.project}: Rojo {server.hello.rojoPort}, control {server.port}`
+	elseif state.lostAt and state.lostProject then
+		self.project.Text = `Was syncing {state.lostProject}`
 	else
 		self.project.Text = "No server attached"
 	end
-	self.lastSync.Text = `Last sync {ago(state.lastSyncAt)}, {state.patches} updates`
+	self.lastSync.Text = if state.lostAt
+		then `Connection lost {ago(state.lostAt)}, last sync {ago(state.lastSyncAt)}`
+		else `Last sync {ago(state.lastSyncAt)}, {state.patches} updates`
+	self.lastSync.TextColor3 = if state.lostAt then COLORS.bad else COLORS.dim
 	self.autoConnect = state.autoConnect
 	self.autoButton.Text = if state.autoConnect then "Auto-connect: on" else "Auto-connect: off"
 	self.confirmButton.Visible = state.phase == "confirm"
@@ -255,12 +268,20 @@ function Panel:render(state)
 	end
 
 	local remote = Control.remote
-	self.remoteLine.Text = if remote
-		then `Using {remote.url}`
-		else "Paste the link from `typetorch serve pair --url`"
-	self.remoteLink.Visible = remote == nil
-	self.pairButton.Visible = remote == nil
+	self.remoteLine.Text = if remote then `Remote: {remote.url}` else "This computer's typetorch serve"
+	self.remoteLink.PlaceholderText = if remote
+		then "new pairing link, to switch servers"
+		else "pairing link, e.g. https://serve.example.com#code"
+	self.remoteHint.Text = if remote
+		then "Paste a new link from `typetorch serve pair --url` to switch, or go back to this computer's serve."
+		else "To use someone else's serve, paste the link from `typetorch serve pair --url`."
 	self.localButton.Visible = remote ~= nil
+	-- A pairing code works once: empty the box when the server switches (kept after a failed pair, to fix it).
+	local remoteUrl = if remote then remote.url else ""
+	if self.shownRemote ~= nil and self.shownRemote ~= remoteUrl then
+		self.remoteLink.Text = ""
+	end
+	self.shownRemote = remoteUrl
 	self.remoteMessage.Text = state.remoteMessage or ""
 	self.remoteMessage.Visible = self.remoteMessage.Text ~= ""
 

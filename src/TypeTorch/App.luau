@@ -77,6 +77,7 @@ local state = {
 		diffs = {},
 		message = "",
 		job = nil,
+		jobServer = nil,
 		jobText = "",
 		checkedAt = nil :: number?,
 		lastCheckClock = nil :: number?,
@@ -84,10 +85,15 @@ local state = {
 	},
 	wake = nil :: thread?,
 	remoteMessage = "",
+	-- When the sync last dropped (and which project it was): set until it connects again, so a serve that went away
+	-- shows as Disconnected rather than as a fresh "Waiting". A deliberate switch (pairing, auto-connect off) clears it.
+	lostAt = nil :: number?,
+	lostProject = nil :: string?,
 }
 
 local panel
 local createUi: (Plugin) -> ()
+local checkAssets: () -> ()
 
 local function settingKey(): string
 	return `TypeTorch_autoConnect_{if game.PlaceId ~= 0 then tostring(game.PlaceId) else "local"}`
@@ -220,6 +226,7 @@ local function connect(server: Server)
 	local session = ServeSession.new({ apiContext = api, twoWaySync = false })
 	state.session = session
 	local settled = false
+	local synced = false
 	session:onStatusChanged(function(status, detail)
 		if state.session ~= session then
 			return
@@ -227,10 +234,20 @@ local function connect(server: Server)
 		if status == ServeSession.Status.Connected then
 			state.backoff = 1
 			state.lastSyncAt = os.time()
+			synced = true
+			state.lostAt = nil
 			setPhase("connected", `{server.hello.project} ({server.hello.projectFile})`)
+			if state.mode == "edit" then
+				-- serve may have restarted or be another one: look at the hot assets again.
+				task.spawn(checkAssets)
+			end
 		elseif status == ServeSession.Status.Disconnected then
 			state.session = nil
-			setPhase("disconnected", if detail then tostring(detail) else "connection closed")
+			if synced and not state.lostAt then
+				state.lostAt = os.time()
+				state.lostProject = server.hello.project
+			end
+			setPhase("disconnected", if detail then `Retrying: {detail}` else "Connection closed, retrying")
 		end
 		if state.mode == "server" then
 			setLiveReload(status == ServeSession.Status.Connected)
@@ -263,7 +280,9 @@ local function loop()
 				local ok, hello = Control.request(server.port, "GET", "/tt/hello")
 				if ok and hello.pid ~= server.hello.pid then
 					stopSession()
-					setPhase("disconnected", "typetorch serve restarted")
+					state.lostAt = os.time()
+					state.lostProject = server.hello.project
+					setPhase("disconnected", "typetorch serve restarted, reconnecting")
 				else
 					report()
 				end
@@ -286,13 +305,12 @@ local function loop()
 				waitOrWake(PROBE_SECONDS)
 			elseif not server then
 				state.server = nil
-				if Control.remote then
-					setPhase("waiting", `Can't reach {Control.remote.url}: {Control.lastRemoteError or "no answer"}`)
-				elseif #found == 0 then
-					setPhase("waiting", "Run `typetorch serve` in the game folder")
-				else
-					setPhase("waiting", `{#found} servers run, none for this experience ({game.GameId})`)
-				end
+				local reason = if Control.remote
+					then `Can't reach {Control.remote.url}: {Control.lastRemoteError or "no answer"}`
+					elseif #found == 0 then "Run `typetorch serve` in the game folder"
+					else `{#found} servers run, none for this experience ({game.GameId})`
+				-- After a drop it stays Disconnected (red) until serve is back, retrying meanwhile.
+				setPhase(if state.lostAt then "disconnected" else "waiting", reason)
 				waitOrWake(if state.emptyProbes > IDLE_PROBES then IDLE_PROBE_SECONDS else PROBE_SECONDS)
 			elseif not matches and not state.confirmed[server.hello.pid] and not state.anyway then
 				state.server = server
@@ -322,6 +340,8 @@ end
 
 -- Reads serve's status (compile errors, children) while the panel is open.
 local ASSET_SCAN_EVERY = 3 -- status ticks
+-- Failed polls in a row before a job counts as lost (serve gone).
+local JOB_MISSES = 5
 
 local function refreshAssets()
 	state.assets.marked = Assets.scan()
@@ -358,6 +378,17 @@ local function statusLoop()
 			render()
 		end
 		task.wait(STATUS_SECONDS)
+	end
+end
+
+-- After (re)connecting: rescan the place and, when there are hot assets, run a quiet Check against this serve.
+checkAssets = function()
+	refreshAssets()
+	local lock = state.assets.lock
+	if #state.assets.marked > 0 or (lock and lock.assets and next(lock.assets) ~= nil) then
+		App.runJob("assets-status", true)
+	else
+		render()
 	end
 end
 
@@ -427,7 +458,8 @@ function App.runJob(kind: string, quiet: boolean?, auto: boolean?)
 		end
 		return
 	end
-	if state.assets.job and state.assets.job.state == "running" then
+	-- One job at a time per serve; a job left running on a serve that went away doesn't block the new one.
+	if state.assets.job and state.assets.job.state == "running" and state.assets.jobServer == server then
 		return
 	end
 	local check = kind == "assets-status"
@@ -463,16 +495,31 @@ function App.runJob(kind: string, quiet: boolean?, auto: boolean?)
 		return
 	end
 	state.assets.job = job
+	state.assets.jobServer = server
 	task.spawn(function()
+		local misses = 0
 		while state.plugin and job.state == "running" do
 			state.assets.jobText = Assets.describeJob(job)
 			render()
 			task.wait(1)
+			if state.assets.job ~= job then
+				return -- a newer job replaced it
+			end
 			local polled, latest = Control.request(server.port, "GET", `/tt/jobs?id={job.id}`)
 			if polled then
+				misses = 0
 				job = latest
 				state.assets.job = job
+			else
+				misses += 1
+				if misses >= JOB_MISSES or state.server ~= server then
+					job = { id = job.id, state = "failed", error = "lost the connection to typetorch serve" }
+					state.assets.job = job
+				end
 			end
+		end
+		if state.assets.job ~= job then
+			return
 		end
 		state.assets.jobText = Assets.describeJob(job)
 		if job.state == "done" then
@@ -569,6 +616,7 @@ function App.pairRemote(link: string)
 	end
 	state.plugin:SetSetting(REMOTE_SETTING, { url = url, token = token })
 	state.remoteMessage = `Paired with {url}`
+	state.lostAt = nil
 	loadRemote()
 	App.reconnect()
 end
@@ -576,7 +624,8 @@ end
 -- Back to the local serve (the pairing stays valid on the owner's side until they unpair it).
 function App.forgetRemote()
 	state.plugin:SetSetting(REMOTE_SETTING, nil)
-	state.remoteMessage = "Using the local typetorch serve"
+	state.remoteMessage = "Using the typetorch serve on this computer"
+	state.lostAt = nil
 	loadRemote()
 	App.reconnect()
 end
@@ -584,7 +633,7 @@ end
 function App.reconnect()
 	stopSession()
 	state.backoff = 1
-	setPhase("disconnected", "reconnecting")
+	setPhase("connecting", "Reconnecting")
 	wake()
 end
 
@@ -595,6 +644,7 @@ function App.setAutoConnect(on: boolean)
 	end
 	if not on then
 		stopSession()
+		state.lostAt = nil
 	end
 	wake()
 end
@@ -635,7 +685,10 @@ local function agentReconnect(args)
 			break
 		end
 		-- Nothing to connect to, or waiting for a click: no use waiting longer.
-		if (state.phase == "waiting" or state.phase == "confirm") and os.clock() - started > 3 then
+		if
+			(state.phase == "waiting" or state.phase == "confirm" or state.phase == "disconnected")
+			and os.clock() - started > 3
+		then
 			break
 		end
 	end
