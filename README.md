@@ -102,10 +102,10 @@ their own worktree on the serve machine, so several devs can use it at once.
 
 - **Code mode from Studio**: Claude edits a copy of the serve machine's branch. The Live / Code pill shows the mode;
   Live (game tools on a running server) works from the in-game tab.
-- **The open place**: Claude can read it (`inspect`, `find`, Studio output, status) and change it with Luau snippets
-  that run in this Studio's Edit DataModel at once, each one undo step (Ctrl+Z); the code shows in the chat. Only
-  prompts sent from this chat are answered (`src/TypeTorch/StudioTools.luau`). Save or publish the place to keep the
-  changes.
+- **The open place**: Claude can read it (`inspect`, `find`, Studio output, status), read-only. Only prompts sent from
+  this chat are answered (`src/TypeTorch/StudioTools.luau`). Claude changes the game through files (Code mode, above),
+  never by running code in Studio: the plugin doesn't execute code it receives (Creator Store rules ban runtime code
+  loading).
 - **"+" menu** for the next message: **Dex path** (the Studio selection), **My logs** (this DataModel's Output),
   **Server logs** and **Screenshot** (in Play only), **Toolbox** (Creator Store tools for that message only).
 - **New chat**; tap the status line for recent chats; the copy icon on a reply selects its Markdown for Ctrl+C. Images

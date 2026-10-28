@@ -1,12 +1,13 @@
 --!nonstrict
 -- Claude's game tools, answered by this Studio on the place that is open (dev-server src/game-tools.ts, the Studio
--- set): game_status, game_logs, inspect, find and run_luau. A prompt sent from this Studio runs as job "" on the dev
--- machine; its tool requests wait there until this plugin picks them up through serve (`/tt/claude/v1`:
+-- set): game_status, game_logs, inspect and find, all read-only. A prompt sent from this Studio runs as job "" on the
+-- dev machine; its tool requests wait there until this plugin picks them up through serve (`/tt/claude/v1`:
 -- GET /v1/game/pending → GET /v1/game/requests/:id → POST /v1/game/requests/:id/result). Only the Edit DataModel
--- answers, and only requests of prompts in this chat. run_luau runs at once (the dev chose no approval step) as one
--- undo step; its code shows in the chat as the tool call. Results are plain data, capped like the framework's.
+-- answers, and only requests of prompts in this chat. Results are plain data, capped like the framework's.
+-- This plugin never runs code it receives: run_luau (and any other tool) is answered "not available in Studio".
+-- Studio prompts run in Code mode, where the dev-server doesn't offer run_luau anyway; Claude changes the game
+-- through files instead.
 
-local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local HttpService = game:GetService("HttpService")
 local LogService = game:GetService("LogService")
 local RunService = game:GetService("RunService")
@@ -18,9 +19,7 @@ local MAX_DATA = 60000
 local MAX_CHILDREN = 100
 local MAX_PROPS = 200
 local FIND_VISITS = 30000
-local OUTPUT_LINES = 200
 local LINE_CHARS = 1000
-local RETURNED_CHARS = 8000
 local REQUEST_ID = "^%x+$"
 
 -- Properties shown when ReflectionService can't list a class's own.
@@ -68,41 +67,6 @@ local function encode(value: any): string
 		return tostring(round(value))
 	end
 	return tostring(value)
-end
-
--- A depth- and size-capped description of a returned Luau value (framework claude-tools.ts describe).
-local function describe(value: any, depth: number?, seen: { [any]: boolean }?): string
-	depth = depth or 0
-	seen = seen or {}
-	local kind = typeof(value)
-	if value == nil then
-		return "nil"
-	elseif kind == "string" then
-		return string.sub(string.format("%q", value), 1, 2000)
-	elseif kind == "number" or kind == "boolean" then
-		return tostring(value)
-	elseif kind == "Instance" then
-		local ok, path = pcall(value.GetFullName, value)
-		return if ok then `{value.ClassName} {path}` else "Instance"
-	elseif kind == "table" then
-		if seen[value] or depth >= 3 then
-			return "{…}"
-		end
-		seen[value] = true
-		local parts = {}
-		local count = 0
-		for key, inner in value do
-			count += 1
-			if count > 50 then
-				table.insert(parts, "…")
-				break
-			end
-			local name = if type(key) == "string" and string.match(key, "^[%a_][%w_]*$") then key else `[{describe(key, depth + 1, seen)}]`
-			table.insert(parts, `{name} = {describe(inner, depth + 1, seen)}`)
-		end
-		return "{" .. table.concat(parts, ", ") .. "}"
-	end
-	return `{kind}({tostring(value)})`
 end
 
 -- An instance from "game.Workspace.Map", "Workspace/Map/Part", `Workspace.Map["Spawn point"]` or "ServerStorage".
@@ -315,76 +279,9 @@ local function gameStatus(): string
 	})
 end
 
--- run_luau: the snippet as a fresh ModuleScript (plugins can't loadstring), with print/warn captured; one undo step.
-local function runLuau(args, description: string): any
-	local code = if type(args.code) == "string" then args.code else ""
-	local timeout = if type(args.timeoutSeconds) == "number" then math.clamp(args.timeoutSeconds, 1, 30) else 10
-	local output = {}
-	local function capture(prefix: string)
-		return function(...)
-			if #output >= OUTPUT_LINES then
-				return
-			end
-			local parts = {}
-			for index = 1, select("#", ...) do
-				parts[index] = tostring((select(index, ...)))
-			end
-			table.insert(output, string.sub(prefix .. table.concat(parts, " "), 1, LINE_CHARS))
-		end
-	end
-	local module = Instance.new("ModuleScript")
-	module.Name = "ClaudeSnippet"
-	local okSource, sourceError = pcall(function()
-		module.Source = "return function(print, warn)\n" .. code .. "\nend"
-	end)
-	if not okSource then
-		module:Destroy()
-		return { ok = false, output = {}, error = `could not load the snippet: {sourceError}` }
-	end
-	local started = os.clock()
-	local recording = ChangeHistoryService:TryBeginRecording(`Claude: {string.sub(description, 1, 60)}`)
-	local done, result = false, nil
-	local thread = task.spawn(function()
-		local ok, fnOrError = pcall(require, module)
-		if not ok or type(fnOrError) ~= "function" then
-			done, result = true, { ok = false, error = `syntax: {tostring(fnOrError)}` }
-			return
-		end
-		local packed = table.pack(xpcall(fnOrError, function(err)
-			return tostring(err)
-		end, capture(""), capture("warn: ")))
-		if packed[1] then
-			local returned = {}
-			for index = 2, packed.n do
-				table.insert(returned, describe(packed[index]))
-			end
-			done, result = true, { ok = true, returned = if #returned > 0 then string.sub(table.concat(returned, ", "), 1, RETURNED_CHARS) else nil }
-		else
-			done, result = true, { ok = false, error = string.sub(tostring(packed[2]), 1, LINE_CHARS) }
-		end
-	end)
-	while not done and os.clock() - started < timeout do
-		task.wait(0.05)
-	end
-	if not done then
-		pcall(task.cancel, thread)
-		result = { ok = false, error = `timed out after {timeout} s` }
-	end
-	if recording then
-		ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
-	end
-	module:Destroy()
-	result.output = output
-	result.ms = math.floor((os.clock() - started) * 1000)
-	return result
-end
-
 local function answer(request): any
 	local args = if type(request.args) == "table" then request.args else {}
 	local tool = request.tool
-	if tool == "run_luau" then
-		return runLuau(args, if type(request.description) == "string" then request.description else "run_luau")
-	end
 	local ok, data = pcall(function()
 		if tool == "inspect" then
 			return inspect(args)
