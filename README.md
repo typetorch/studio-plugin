@@ -47,8 +47,10 @@ The toolbar's **TypeTorch** button opens the dock widget (its icon follows the c
 - **Hot assets**: the hot assets marked in the place and what the last check found. **Add** marks the Explorer
   selection (the name box sets the key; with one hot asset selected, a new name turns Add into **Rename**), **Remove**
   unmarks it. **Check** compares the place with the lockfile, **Upload** uploads new and changed assets, **Publish to
-  dev** (named after the lockfile's dev branch) uploads and deploys them to that branch. Each button shows only when it
-  has work; they send the open place's export to serve as a job.
+  dev** (named after serve's dev branch: `dev`, or `tt serve --dev-branch <b>`) uploads and deploys them to that
+  branch. Each button shows only when it has work; they send the open place's export to serve as a job. After a check,
+  each new, changed or removed row has a **Diff** button (CLI 0.15.0+): the instances added, removed or changed inside
+  it. While the panel is open the check repeats every 30 s (below).
 - **Compile**: the last compile result and its first errors.
 - **typetorch serve**: serve's child processes and their restarts.
 
@@ -98,23 +100,26 @@ with a paired remote one, through serve's `/tt/claude/...` routes; replies strea
 (`/tt/claude/stream`), with HTTP polling while there is no stream. Only allowed Roblox users can prompt: serve's
 `--claude-users <ids>`, by default the owners in `typetorch.json`. A remote Studio prompts as the user it paired with,
 so the owner adds a helper's id there (pair again after updating the plugin, so serve knows your user). Each dev has
-their own worktree on the serve machine, so several devs can use it at once.
+their own worktree on the serve machine (dev-server 0.4.0), so several devs can use it at once.
 
 - **Code mode from Studio**: Claude edits a copy of the serve machine's branch. The Live / Code pill shows the mode;
   Live (game tools on a running server) works from the in-game tab.
-- **The open place**: Claude can read it (`inspect`, `find`, Studio output, status), read-only. Only prompts sent from
-  this chat are answered (`src/TypeTorch/StudioTools.luau`). Claude changes the game through files (Code mode, above),
-  never by running code in Studio: the plugin doesn't execute code it receives (Creator Store rules ban runtime code
-  loading).
+- **The open place**: the plugin answers Claude's `inspect`, `find`, `game_logs` (Studio output) and `game_status`,
+  read-only, in Edit. Only prompts sent from this chat are answered (`src/TypeTorch/StudioTools.luau`). Claude changes
+  the game through files (Code mode, above), never by running code in Studio: the plugin doesn't execute code it
+  receives (Creator Store rules ban runtime code loading), so `run_luau` is answered "not available in Studio" (0.7.1
+  removed it). **Planned:** the requests come from remote-claude (dev-server 0.4.0) through serve's `/tt/claude/v1`,
+  which doesn't pass `/v1/game/*` through yet (CLI 0.18.1), so until it does Claude works from the files only.
 - **"+" menu** for the next message: **Dex path** (the Studio selection), **My logs** (this DataModel's Output),
   **Server logs** and **Screenshot** (in Play only), **Toolbox** (Creator Store tools for that message only).
 - **New chat**; tap the status line for recent chats; the copy icon on a reply selects its Markdown for Ctrl+C. Images
   Claude shows are drawn in the chat. The chat is kept on serve per user, so it follows you between Edit and Play.
 - **Apply this change?** When a run changed files, remote-claude commits them and the reply ends in a card with the
-  summary and the changed files (+/- lines):
+  summary and the changed files (+/- lines). Apply and Deploy to dev need dev-server 0.4.0, which is not on npm yet;
+  `tt serve --claude` from CLI 0.12.2 on needs it to start at all (0.3.3 refuses `--deploy-branch`):
   - **Apply** (green) puts the change into the checkout serve's Rojo syncs to Studio, uncommitted, so you review and
     commit it there. A change to lines that changed there too is refused and the checkout is left as it was.
-  - **Deploy to dev** runs `typetorch deploy` of that commit to the dev branch; the card shows "Deploying...",
+  - **Deploy to dev** runs `typetorch deploy` of that commit to serve's dev branch; the card shows "Deploying...",
     "Waiting for approval on your PC" when the deploy needs the owner's approval, then "Deployed" with the build id
     (or why it failed). Running dev servers hot-swap to it.
   - **Discard** drops the commit.
